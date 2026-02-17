@@ -1,1 +1,99 @@
-HELLO
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>XLSX Plotter</title>
+
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+    <!-- Select2 -->
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+
+    <!-- Plotly -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+    <!-- SheetJS (XLSX parser) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+        }
+
+        #plot {
+            height: 75vh;   /* 75% of viewport height */
+        }
+
+        .container {
+            width: 95%;
+            margin: auto;
+        }
+
+        label {
+            font-weight: bold;
+        }
+
+        .input-div {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .edit-div {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-type-select, .generate-plot, #columnSelect {
+            height: 1.3rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <h2>Chart Plotter</h2>
+
+    <div class="input-div">
+        <div>
+            <label for="fileInput">Select Excel File (.xlsx): </label>
+            <input type="file" id="fileInput" accept=".xlsx, .yml">
+        </div>
+
+        <div>
+            <label>Select Chart type: </label>
+            <select id="chartTypeInput" class="chart-type-select">
+                {% for key, label in chart_types.items() %}
+                    <option value="{{ key }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+    </div>
+    <br>
+
+    <div class="edit-div">
+        <label for="columnSelect">Select Columns to Plot:</label><br>
+        <select id="columnSelect"></select><br>
+    
+        <label>Title</label>
+        <input id="plotTitleInput" type="text" placeholder="Plot title">
+    </div>
+
+    <div>
+        <button class="generate-plot">
+            Generate plot
+        </button>
+    </div>
+
+    <div id="plot"></div>
+
+</div>
+
+<script type="module" src="{{ url_for('static', filename='js/main_template.js') }}"></script>
+
+</body>
+</html>

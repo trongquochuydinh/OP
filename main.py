@@ -6,6 +6,10 @@ from flask import (
 
 FLASK_SECRET_KEY = os.environ.get('FLASK_SECRET_KEY')
 
+from blueprints.core import core_bp
+from blueprints.data_processing import date_processing_bp
+from blueprints.plots import plots_bp
+
 app = Flask(__name__)
 
 app.config.update(
@@ -15,9 +19,9 @@ app.config.update(
     SESSION_COOKIE_SECURE=False
 )
 
-@app.route("/")
-def init_home():
-    return render_template("main_template.html")
+app.register_blueprint(core_bp)
+app.register_blueprint(date_processing_bp)
+app.register_blueprint(plots_bp)
 
 if __name__ == "__main__":
     port_app = os.environ.get("PORT_APP", 8080)
