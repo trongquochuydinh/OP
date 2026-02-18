@@ -16,11 +16,13 @@ def upload():
         schema = detect_schema(records)
     
         return jsonify({
+            "type": parsed["type"],
             "schema": schema,
             "records": records
         })
     else:
         records = normalize_yaml(parsed["data"])
         return jsonify({
+            "type": parsed["type"],
             "records": records
         })
