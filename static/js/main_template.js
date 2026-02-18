@@ -40,6 +40,9 @@ async function uploadFile(file) {
         const data = await response.json();
 
         dataset = data; // store full dataset
+
+        cleanup_column_select();
+
         if (data.schema != null)
             populateSelect(data.schema);
 
@@ -56,10 +59,14 @@ async function uploadFile(file) {
    POPULATE COLUMN SELECT
 ================================= */
 
+function cleanup_column_select() {
+    const select = $('#columnSelect');
+    select.empty();
+}
+
 function populateSelect(schema) {
 
     const select = $('#columnSelect');
-    select.empty();
 
     if (!schema.measures || schema.measures.length === 0) {
         return;
@@ -87,7 +94,6 @@ async function generatePlotRequest() {
         return;
     }
 
-    const selectedColumn = $('#columnSelect').val();
     const title = $('#plotTitleInput').val();
 
     const chartType = $('#chartTypeInput').val();
