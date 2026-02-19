@@ -28,25 +28,31 @@ def normalize_yaml(data):
             levels = entry[position]
 
             for i, level in enumerate(levels):
-                if isinstance(level, list):
-                    values = level
-                else:
-                    # handle "65328, n.a."
-                    values = [v.strip() for v in str(level).split(",")]
 
-                # filter numeric values
-                nums = []
+                # Split comma values if needed
+                values = [v.strip() for v in str(level).split(",")]
+
+                numeric_values = []
                 for v in values:
                     try:
-                        nums.append(float(v))
+                        numeric_values.append(float(v))
                     except:
                         continue
 
-                if len(nums) >= 2:
+                if len(numeric_values) == 1:
+                    # Single point
                     records.append({
                         "label": f"{country} - {position}{i+1}",
-                        "low": nums[0],
-                        "high": nums[1]
+                        "low": numeric_values[0],
+                        "high": None
+                    })
+
+                elif len(numeric_values) >= 2:
+                    # Dumbbell
+                    records.append({
+                        "label": f"{country} - {position}{i+1}",
+                        "low": numeric_values[0],
+                        "high": numeric_values[1]
                     })
 
     return records

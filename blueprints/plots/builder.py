@@ -98,49 +98,50 @@ def build_horizontal_clustered_barchart():
 
 def build_dumbbellchart(records, _, title):
 
-    labels = [r["label"] for r in records]
-    lows = [r["low"] for r in records]
-    highs = [r["high"] for r in records]
-
     traces = []
 
-    # connecting lines
-    for i in range(len(records)):
-        traces.append({
-            "x": [lows[i], highs[i]],
-            "y": [labels[i], labels[i]],
-            "mode": "lines",
-            "line": {"color": "gray"},
-            "showlegend": False
-        })
+    labels = [r["label"] for r in records]
 
-    # low points
+    # Draw connecting lines only if high exists
+    for r in records:
+        if r["high"] is not None:
+            traces.append({
+                "x": [r["low"], r["high"]],
+                "y": [r["label"], r["label"]],
+                "mode": "lines",
+                "line": {"color": "gray"},
+                "showlegend": False
+            })
+
+    # Low points
     traces.append({
-        "x": lows,
+        "x": [r["low"] for r in records],
         "y": labels,
         "mode": "markers",
         "marker": {"color": "blue", "size": 8},
-        "name": "Lower bound"
+        "name": "Low"
     })
 
-    # high points
+    # High points (only where exists)
     traces.append({
-        "x": highs,
-        "y": labels,
+        "x": [r["high"] for r in records if r["high"] is not None],
+        "y": [r["label"] for r in records if r["high"] is not None],
         "mode": "markers",
         "marker": {"color": "orange", "size": 8},
-        "name": "Upper bound"
+        "name": "High"
     })
 
     layout = {
         "title": title,
-        "xaxis": {"title": "Salary"},
-        "yaxis": {"automargin": True},
-        "height": max(600, len(records) * 25)
+        "yaxis": {
+            "automargin": True,
+            "categoryorder": "array",
+            "categoryarray": labels
+        },
+        "height": max(800, len(records) * 20)
     }
 
     return traces, layout
-
 
 CHART_BUILDERS = {
     "linechart": build_linechart,
