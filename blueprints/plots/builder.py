@@ -194,20 +194,71 @@ def build_chart(chart_type, df, columns, title):
             grouped,
             x_col=col,
             y_col="count",
-            title=title
+            title=title or f"Frequency of {col}"
         )
 
-    # CASE 2: two columns → X/Y
-    else:
+    # CASE 2: two columns → Check if both are categorical for grouping, otherwise X/Y
+    elif len(columns) == 2:
         x_col = columns[0]
         y_col = columns[1]
 
-        # 🔥 Drop rows where either column is null
-        df = df[[x_col, y_col]].dropna()
-
-        return CHART_BUILDERS[chart_type](
-            df,
-            x_col=x_col,
-            y_col=y_col,
-            title=title
-        )
+        # Drop rows where either column is null
+        df_clean = df[[x_col, y_col]].dropna()
+        
+        # Check if both columns appear to be categorical (strings or limited unique values)
+        x_is_categorical = df_clean[x_col].dtype == 'object' or df_clean[x_col].nunique() <= 20
+        y_is_categorical = df_clean[y_col].dtype == 'object' or df_clean[y_col].nunique() <= 20
+        
+        if x_is_categorical and y_is_categorical:
+            # Both categorical: group by combination and count
+            grouped = df_clean.groupby([x_col, y_col]).size().reset_index(name='count')
+            
+            # Create a combined label for x-axis
+            grouped['combination'] = grouped[x_col].astype(str) + " - " + grouped[y_col].astype(str)
+            
+            return CHART_BUILDERS[chart_type](
+                grouped,
+                x_col='combination',
+                y_col='count',
+                title=title or f"Count of {x_col} by {y_col}"
+            )
+        else:
+            # At least one is numeric: treat as X vs Y
+            return CHART_BUILDERS[chart_type](
+                df_clean,
+                x_col=x_col,
+                y_col=y_col,
+                title=title or f"{y_col} vs {x_col}"
+            )
+    
+    # CASE 3: multiple columns → use first two with same categorical logic
+    else:
+        x_col = columns[0]
+        y_col = columns[1]
+        
+        # Drop rows where the first two columns are null
+        df_clean = df[[x_col, y_col]].dropna()
+        
+        # Check if both columns appear to be categorical
+        x_is_categorical = df_clean[x_col].dtype == 'object' or df_clean[x_col].nunique() <= 20
+        y_is_categorical = df_clean[y_col].dtype == 'object' or df_clean[y_col].nunique() <= 20
+        
+        if x_is_categorical and y_is_categorical:
+            # Both categorical: group by combination and count
+            grouped = df_clean.groupby([x_col, y_col]).size().reset_index(name='count')
+            grouped['combination'] = grouped[x_col].astype(str) + " - " + grouped[y_col].astype(str)
+            
+            return CHART_BUILDERS[chart_type](
+                grouped,
+                x_col='combination',
+                y_col='count',
+                title=title or f"Count of {x_col} by {y_col} (using first 2 of {len(columns)} columns)"
+            )
+        else:
+            # At least one is numeric: treat as X vs Y
+            return CHART_BUILDERS[chart_type](
+                df_clean,
+                x_col=x_col,
+                y_col=y_col,
+                title=title or f"{y_col} vs {x_col} (using first 2 of {len(columns)} columns)"
+            )

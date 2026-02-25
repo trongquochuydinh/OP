@@ -3,7 +3,7 @@ from flask import (
 )
 
 from . import core_bp
-from config import CHART_TYPES
+from blueprints.core.config import CHART_TYPES
 
 @core_bp.route("/", methods=['GET'])
 def init_main():
