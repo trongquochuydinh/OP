@@ -1,100 +1,115 @@
 from collections import Counter
 import plotly.colors as pc
+import pandas as pd
 
-def build_linechart(records, columns):
-    traces = []
-
-    for col in columns:
-        traces.append({
-            "x": list(range(len(records))),
-            "y": [r.get(col) for r in records],
-            "type": "scatter",
-            "mode": "lines",
-            "name": col
-        })
-
-    layout = {
-        "title": "Line Chart",
-        "xaxis": {"title": "Index"},
-        "yaxis": {"title": "Value"}
-    }
-
-    return traces, layout
-
-
-def build_boxplot(records, columns):
-    traces = []
-
-    for col in columns:
-        traces.append({
-            "y": [r.get(col) for r in records],
-            "type": "box",
-            "name": col
-        })
-
-    layout = {
-        "title": "Box Plot"
-    }
-
-    return traces, layout
-
-
-
-def build_barchart(records, column, title):
-
-    values = [r.get(column) for r in records]
-    counter = Counter(values)
-
-    sorted_items = sorted(counter.items(), key=lambda x: x[1], reverse=True)
-
-    x_vals = [str(k) for k, _ in sorted_items]
-    y_vals = [v for _, v in sorted_items]
-
-    # Use built-in qualitative palette
-    colors = pc.qualitative.Plotly
-
-    # Repeat colors if more bars than palette size
-    color_list = [colors[i % len(colors)] for i in range(len(x_vals))]
+def build_linechart(df, x_col, y_col, title):
 
     traces = [{
-        "x": x_vals,
-        "y": y_vals,
-        "type": "bar",
-        "name": column,
-        "marker": {
-            "color": color_list
-        }
+        "x": df[x_col].tolist(),
+        "y": df[y_col].tolist(),
+        "type": "scatter",
+        "mode": "lines",
+        "name": f"{y_col} vs {x_col}"
     }]
 
     layout = {
         "title": title,
-        "xaxis": {"type": "category"},
-        "yaxis": {"title": "Count"},
+        "xaxis": {"title": x_col},
+        "yaxis": {"title": y_col}
+    }
+
+    return traces, layout
+
+
+def build_boxplot(df, x_col, y_col, title):
+
+    traces = [{
+        "y": df[y_col].tolist(),
+        "type": "box",
+        "name": y_col
+    }]
+
+    layout = {
+        "title": title,
+        "yaxis": {"title": y_col}
+    }
+
+    return traces, layout
+
+
+
+def build_barchart(df, x_col, y_col, title):
+
+    traces = [{
+        "x": df[x_col].astype(str).tolist(),
+        "y": df[y_col].tolist(),
+        "type": "bar"
+    }]
+
+    layout = {
+        "title": title,
+        "xaxis": {"type": "category", "title": x_col},
+        "yaxis": {"title": y_col},
         "bargap": 0.05
     }
 
     return traces, layout
 
-def build_piechart(records, column):
-    values = [r.get(column) for r in records]
+
+def build_piechart(df, x_col, y_col, title):
 
     traces = [{
-        "labels": [f"Item {i}" for i in range(len(values))],
-        "values": values,
+        "labels": df[x_col].astype(str).tolist(),
+        "values": df[y_col].tolist(),
         "type": "pie"
     }]
 
     layout = {
-        "title": f"Pie Chart - {column}"
+        "title": title
     }
 
     return traces, layout
 
-def build_stacked_barchart():
-    return
+def build_stacked_barchart(df, x_col, y_col, title):
 
-def build_horizontal_clustered_barchart():
-    return
+    # Group by x_col
+    grouped = df.groupby(x_col)[y_col].sum().reset_index()
+
+    traces = [{
+        "x": grouped[x_col].astype(str).tolist(),
+        "y": grouped[y_col].tolist(),
+        "type": "bar",
+        "name": y_col
+    }]
+
+    layout = {
+        "title": title,
+        "barmode": "stack",
+        "xaxis": {"title": x_col},
+        "yaxis": {"title": y_col}
+    }
+
+    return traces, layout
+
+def build_horizontal_clustered_barchart(df, x_col, y_col, title):
+
+    traces = [{
+        "x": df[y_col].tolist(),
+        "y": df[x_col].astype(str).tolist(),
+        "type": "bar",
+        "orientation": "h",
+        "name": y_col
+    }]
+
+    layout = {
+        "title": title,
+        "barmode": "group",
+        "xaxis": {"title": y_col},
+        "yaxis": {"title": x_col, "automargin": True}
+    }
+
+    return traces, layout
+
 
 def build_dumbbellchart(records, _, title):
 
@@ -153,8 +168,46 @@ CHART_BUILDERS = {
     "dumbbellchart": build_dumbbellchart
 }
 
-def build_chart(chart_type, records, column, title):
+def build_chart(chart_type, df, columns, title):
+
     if chart_type not in CHART_BUILDERS:
         raise ValueError(f"Unsupported chart type: {chart_type}")
 
-    return CHART_BUILDERS[chart_type](records, column, title)
+    if not columns:
+        raise ValueError("No columns selected")
+
+    df = df.copy()
+
+    df = df.where(pd.notnull(df), None)
+
+    # CASE 1: single column → grouping + count
+    if len(columns) == 1:
+        col = columns[0]
+
+        # drop rows where selected column is null
+        df = df[df[col].notna()]
+
+        grouped = df[col].value_counts().reset_index()
+        grouped.columns = [col, "count"]
+
+        return CHART_BUILDERS[chart_type](
+            grouped,
+            x_col=col,
+            y_col="count",
+            title=title
+        )
+
+    # CASE 2: two columns → X/Y
+    else:
+        x_col = columns[0]
+        y_col = columns[1]
+
+        # 🔥 Drop rows where either column is null
+        df = df[[x_col, y_col]].dropna()
+
+        return CHART_BUILDERS[chart_type](
+            df,
+            x_col=x_col,
+            y_col=y_col,
+            title=title
+        )
