@@ -1,8 +1,11 @@
 def normalize_xlsx(df):
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    df = df.fillna(0)
-    records = df.to_dict(orient="records")
-    return records
+    import pandas as pd
+    df = df.replace(r'^\s*$', pd.NA, regex=True)
+    df = df.dropna(axis=1, how="all")
+    df = df.dropna(axis=0, how="all")
+
+    return df
+
 
 def parse_salary_value(value):
     if value in ("n.a.", "-", None):
@@ -19,7 +22,7 @@ def normalize_yaml(data):
     records = []
 
     for entry in data:
-        country = entry["country"]
+        country = entry.get("country")
 
         for position in ["phd", "postdoc", "prof"]:
             if position not in entry:
@@ -27,33 +30,40 @@ def normalize_yaml(data):
 
             levels = entry[position]
 
-            for i, level in enumerate(levels):
+            for i, level in enumerate(levels, start=1):
 
-                # Split comma values if needed
-                values = [v.strip() for v in str(level).split(",")]
+                low = None
+                high = None
 
-                numeric_values = []
-                for v in values:
-                    try:
-                        numeric_values.append(float(v))
-                    except:
-                        continue
+                # Case 1: already numeric
+                if isinstance(level, (int, float)):
+                    low = float(level)
 
-                if len(numeric_values) == 1:
-                    # Single point
-                    records.append({
-                        "label": f"{country} - {position}{i+1}",
-                        "low": numeric_values[0],
-                        "high": None
-                    })
+                # Case 2: string like "65328, n.a."
+                else:
+                    parts = [p.strip() for p in str(level).split(",")]
 
-                elif len(numeric_values) >= 2:
-                    # Dumbbell
-                    records.append({
-                        "label": f"{country} - {position}{i+1}",
-                        "low": numeric_values[0],
-                        "high": numeric_values[1]
-                    })
+                    nums = []
+                    for p in parts:
+                        try:
+                            nums.append(float(p))
+                        except:
+                            continue
+
+                    if len(nums) == 1:
+                        low = nums[0]
+
+                    elif len(nums) >= 2:
+                        low = nums[0]
+                        high = nums[1]
+
+                records.append({
+                    "country": country,
+                    "position": position,
+                    "level": i,
+                    "low": low,
+                    "high": high
+                })
 
     return records
 

@@ -1,28 +1,40 @@
 from flask import request, jsonify
+import pandas as pd
+
 from blueprints.data_processing.parser import parse_file
-from blueprints.data_processing.normalizer import normalize_xlsx, normalize_yaml
-from blueprints.data_processing.schema import detect_schema
+from blueprints.data_processing.normalizer import normalize_yaml, normalize_xlsx
 
 from . import date_processing_bp
 
+DATA_STORAGE = {}
+
 @date_processing_bp.route("/upload", methods=["POST"])
 def upload():
+    global DATA_STORAGE
+
+    # load uploaded file from frontend
     file = request.files["file"]
 
+    # parse the file data
     parsed = parse_file(file)
 
     if parsed["type"] == "xlsx":
-        records = normalize_xlsx(parsed["data"])
-        schema = detect_schema(records)
-    
-        return jsonify({
-            "type": parsed["type"],
-            "schema": schema,
-            "records": records
-        })
+        df = normalize_xlsx(parsed["data"])
+
     else:
         records = normalize_yaml(parsed["data"])
-        return jsonify({
-            "type": parsed["type"],
-            "records": records
-        })
+        df = pd.DataFrame(records)
+
+    # define preview of the 
+    preview = df.head(5).fillna("").to_dict(orient="records")
+
+    # save the file data into a global variable -> avoid loading the file multiple times
+    DATA_STORAGE = df
+
+    return jsonify({
+        "type": parsed["type"],
+        "columns": list(df.columns),
+        "preview": preview,
+        "row_count": len(df)
+    })
+

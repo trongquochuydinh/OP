@@ -2,6 +2,12 @@ let dataset = null;
 
 $(document).ready(function () {
 
+    $('#columnSelect').select2({
+        placeholder: "Select column",
+        allowClear: true,
+        width: '100%'
+    });
+
     // Upload file immediately when selected
     $('#fileInput').on('change', function () {
         const file = this.files[0];
@@ -39,14 +45,20 @@ async function uploadFile(file) {
 
         const data = await response.json();
 
-        dataset = data; // store full dataset
+        dataset = data;
 
         cleanup_column_select();
+        if (dataset.type === "yaml") {
+            $('#columnSelect').prop('disabled', true);
+        } else {
+            populateSelect(data.columns);
+            $('#columnSelect').prop('disabled', false);
+        }
 
-        if (data.schema != null)
-            populateSelect(data.schema);
+        renderPreviewTable(data.preview, data.columns);
 
-        Plotly.purge('plot'); // clear previous plot
+        Plotly.purge('plot');
+
 
     } catch (error) {
         console.error("Upload error:", error);
@@ -54,32 +66,83 @@ async function uploadFile(file) {
     }
 }
 
+function truncateText(text, maxLength = 60) {
+    if (text === null || text === undefined) return "";
+    const str = String(text);
+    return str.length > maxLength ? str.slice(0, maxLength) + "…" : str;
+}
+
+function renderPreviewTable(preview, columns) {
+
+    const container = document.getElementById("previewTable");
+    container.innerHTML = "";
+
+    if (!preview || preview.length === 0) {
+        container.innerHTML = "<p>No preview available</p>";
+        return;
+    }
+
+    const table = document.createElement("table");
+    table.border = "1";
+    table.style.borderCollapse = "collapse";
+
+    const header = document.createElement("tr");
+
+    columns.forEach(col => {
+        const th = document.createElement("th");
+        th.innerText = col;
+        th.style.padding = "4px";
+        header.appendChild(th);
+    });
+
+    table.appendChild(header);
+
+    preview.forEach(row => {
+        const tr = document.createElement("tr");
+
+        columns.forEach(col => {
+            const td = document.createElement("td");
+            const value = row[col];
+            td.innerText = truncateText(value, 80);
+            td.title = value;
+            td.style.padding = "4px";
+            tr.appendChild(td);
+        });
+
+        table.appendChild(tr);
+    });
+
+
+    container.appendChild(table);
+}
+
+
 
 /* ===============================
    POPULATE COLUMN SELECT
 ================================= */
 
 function cleanup_column_select() {
-    const select = $('#columnSelect');
-    select.empty();
+    $('#columnSelect').empty().trigger('change');
 }
 
-function populateSelect(schema) {
+function populateSelect(columns) {
 
     const select = $('#columnSelect');
 
-    if (!schema.measures || schema.measures.length === 0) {
-        return;
-    }
+    select.empty();
 
-    // Add options
-    schema.measures.forEach(col => {
+    columns.forEach(col => {
         select.append(new Option(col, col));
     });
 
-    // 🔥 Auto-select first column
-    const firstColumn = schema.measures[0];
-    select.val([firstColumn]).trigger('change');
+    // Refresh Select2
+    select.trigger('change');
+
+    // Auto-select first column
+    if (columns.length > 0) {
+        select.val(columns[0]).trigger('change');
+    }
 }
 
 
@@ -99,19 +162,18 @@ async function generatePlotRequest() {
     const chartType = $('#chartTypeInput').val();
 
     const formData = new FormData();
-    formData.append("records", JSON.stringify(dataset.records));
     formData.append("chart_type", chartType);
     formData.append("title", title);
 
     if (dataset.type === "xlsx") {
-        const selectedColumn = $('#columnSelect').val();
+        const selectedColumns = $('#columnSelect').val();
 
-        if (!selectedColumn) {
+        if (!selectedColumns) {
             alert("Please select a column.");
             return;
         }
 
-        formData.append("column", selectedColumn);
+        formData.append("columns", JSON.stringify(selectedColumns));
     }
 
     try {

@@ -6,7 +6,7 @@ def parse_file(file):
     filename = file.filename.lower()
 
     if filename.endswith(".xlsx"):
-        df = pd.read_excel(file)
+        df = pd.read_excel(file, sheet_name="target country and flexibility")
         return {"type": "xlsx", "data": df}
 
     elif filename.endswith((".yml", ".yaml")):

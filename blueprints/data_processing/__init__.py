@@ -9,5 +9,4 @@ date_processing_bp = Blueprint(
 from . import routes
 from . import normalizer
 from . import parser
-from . import schema
 
