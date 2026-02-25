@@ -7,10 +7,6 @@
     <!-- jQuery -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
-    <!-- Select2 -->
-    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
-    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-
     <!-- Plotly -->
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 
@@ -65,8 +61,38 @@
             white-space: nowrap;   /* prevents line wrapping */
         }
 
-        .chart-type-select, .generate-plot, #columnSelect {
+        .chart-type-select, .generate-plot {
             height: 1.3rem;
+        }
+
+        #excelRangeInput {
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        #previewRangeBtn, #applyRangeBtn {
+            padding: 4px 12px;
+            border: 1px solid #007ACC;
+            background: #007ACC;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #previewRangeBtn:hover, #applyRangeBtn:hover {
+            background: #005a9e;
+        }
+
+        #rangeInfo {
+            font-style: italic;
+        }
+
+        .range-preview-table {
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            max-height: 200px;
+            overflow: auto;
         }
     </style>
 </head>
@@ -95,15 +121,22 @@
     <br>
 
     <div class="edit-div">
-        <label for="columnSelect">Select Columns to Plot:</label><br>
-        <select id="columnSelect" multiple="multiple"></select><br>
-
-        <div id="previewWrapper">
-                <h3>Data Preview (5 rows)</h3>
-                <div id="previewTable"></div>
+        <!-- Excel Range Selection (only shown for .xlsx files) -->
+        <div id="excelRangeDiv" style="display: none;">
+            <label for="excelRangeInput">Excel Range (e.g., A2:N28, A, A:C, A,C):</label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="text" id="excelRangeInput" placeholder="e.g., A2:N28, A, A:C, or B,D" style="flex: 1;">
+                <button type="button" id="previewRangeBtn">Preview Range</button>
+                <button type="button" id="applyRangeBtn">Apply Range</button>
+            </div>
+            <div id="rangeInfo" style="margin-top: 5px; font-size: 0.9em; color: #666;"></div>
+            <div style="font-size: 0.85em; color: #888; margin-top: 5px;">
+                <strong>Plotting logic:</strong> 1 column = frequency chart, 2 columns = X vs Y, 3+ columns = use first 2<br>
+                <strong>Range formats:</strong> A2:C10 (data subset), A (column), A:C (columns range), B,D (non-neighboring full columns)
+            </div>
+            <br>
         </div>
 
-    
         <label>Title</label>
         <input id="plotTitleInput" type="text" placeholder="Plot title">
     </div>
