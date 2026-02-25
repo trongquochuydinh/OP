@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>XLSX Plotter</title>
+    <title>Data Plotter</title>
 
     <!-- jQuery -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -46,6 +46,25 @@
             flex-direction: column;
         }
 
+        #previewWrapper {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: 400px;     /* vertical scroll if many rows */
+            border: 1px solid #ccc;
+        }
+
+        #previewWrapper table {
+            border-collapse: collapse;
+            min-width: 800px;      /* prevents squashing */
+        }
+
+        #previewWrapper th,
+        #previewWrapper td {
+            padding: 6px;
+            white-space: nowrap;   /* prevents line wrapping */
+        }
+
         .chart-type-select, .generate-plot, #columnSelect {
             height: 1.3rem;
         }
@@ -77,7 +96,13 @@
 
     <div class="edit-div">
         <label for="columnSelect">Select Columns to Plot:</label><br>
-        <select id="columnSelect"></select><br>
+        <select id="columnSelect" multiple="multiple"></select><br>
+
+        <div id="previewWrapper">
+                <h3>Data Preview (5 rows)</h3>
+                <div id="previewTable"></div>
+        </div>
+
     
         <label>Title</label>
         <input id="plotTitleInput" type="text" placeholder="Plot title">
