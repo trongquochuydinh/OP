@@ -2,26 +2,21 @@ from flask import request, jsonify
 import pandas as pd
 from pathlib import Path
 from typing import Any, Dict
+import uuid
 
-from blueprints.data_processing.parser import parse_file, parse_path
+from blueprints.data_processing.parser import parse_excel_bytes, parse_file, parse_path
 from blueprints.data_processing.normalizer import normalize_xlsx, normalize_parsed_payload
 from blueprints.data_processing.excel_utils import (
-    parse_excel_range, apply_range_to_dataframe, get_range_preview,
-    parse_multiple_excel_ranges, apply_multiple_ranges_to_dataframe
+    apply_multiple_ranges_to_dataframe,
+    apply_range_to_dataframe,
+    parse_excel_range,
+    parse_multiple_excel_ranges,
 )
 
 from . import date_processing_bp
 
-DATA_STORAGE = {}
-RAW_DATA_STORAGE = {}  # Store raw data for range operations
-DATA_CONTEXT: Dict[str, Any] = {
-    "file_type": None,
-    "file_name": None,
-    "source_path": None,
-    "source_path_relative": None,
-    "sheet_name": None,
-    "range_applied": None,
-}
+SOURCES: Dict[str, Dict[str, Any]] = {}
+ACTIVE_SOURCE_ID = None
 
 
 def _normalize_source_path(source_path):
@@ -33,7 +28,6 @@ def _normalize_source_path(source_path):
         return None, None
 
     candidate = Path(raw).expanduser()
-
     if candidate.is_absolute() or raw.startswith(("./", "../", "~/")):
         absolute_path = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
         try:
@@ -45,66 +39,122 @@ def _normalize_source_path(source_path):
     return None, raw
 
 
-def _build_data_context(parsed, source_path, source_path_relative):
-    file_type = parsed["type"]
-    return {
-        "file_type": file_type,
-        "file_name": parsed.get("file_name"),
-        "source_path": source_path,
-        "source_path_relative": source_path_relative,
-        "sheet_name": parsed.get("sheet_name") if file_type == "xlsx" else None,
-        "range_applied": None,
+def _get_source(source_id):
+    source = SOURCES.get(source_id)
+    if source is None:
+        raise KeyError(f"Unknown source_id: {source_id}")
+    return source
+
+
+def _build_source_payload(source_id, source):
+    normalized_df = source["normalized_df"]
+    payload = {
+        "source_id": source_id,
+        "file_type": source["file_type"],
+        "file_name": source.get("file_name"),
+        "sheet_name": source.get("sheet_name"),
+        "available_sheets": source.get("available_sheets", []),
+        "source_path": source.get("source_path"),
+        "source_path_relative": source.get("source_path_relative"),
+        "columns": list(normalized_df.columns),
+        "row_count": len(normalized_df),
+        "preview": normalized_df.head(5).fillna("").to_dict(orient="records"),
     }
+    if source["file_type"] == "xlsx":
+        payload["total_rows"] = len(source["raw_df"])
+        payload["total_cols"] = len(source["raw_df"].columns)
+    return payload
 
 
-def _upload_from_parsed_payload(parsed, source_path, source_path_relative):
-    global DATA_STORAGE, RAW_DATA_STORAGE, DATA_CONTEXT
+def _register_parsed_source(parsed, source_path, source_path_relative, source_id=None):
+    global ACTIVE_SOURCE_ID
 
     normalized = normalize_parsed_payload(parsed)
-    df = normalized["dataframe"]
+    normalized_df = normalized["dataframe"]
 
-    if parsed["type"] == "xlsx":
-        RAW_DATA_STORAGE = parsed["data"]
+    file_type = parsed["type"]
+    if file_type == "xlsx":
+        raw_df = parsed["data"]
     else:
-        RAW_DATA_STORAGE = df
+        raw_df = normalized_df
 
-    DATA_CONTEXT = _build_data_context(parsed, source_path, source_path_relative)
-    DATA_STORAGE = df
-
-    response_data = {
-        "type": normalized["type"],
-        "columns": normalized["columns"],
-        "preview": normalized["preview"],
-        "row_count": normalized["row_count"],
+    source_id = source_id or str(uuid.uuid4())
+    SOURCES[source_id] = {
+        "file_type": file_type,
+        "file_name": parsed.get("file_name"),
+        "sheet_name": parsed.get("sheet_name") if file_type == "xlsx" else None,
+        "available_sheets": parsed.get("available_sheets", []) if file_type == "xlsx" else [],
         "source_path": source_path,
         "source_path_relative": source_path_relative,
+        "raw_df": raw_df,
+        "normalized_df": normalized_df,
+        "content_bytes": parsed.get("content_bytes") if file_type == "xlsx" else None,
+    }
+    ACTIVE_SOURCE_ID = source_id
+    return _build_source_payload(source_id, SOURCES[source_id])
+
+
+def get_dataframe_for_chart(source_id, range_str=None):
+    source = _get_source(source_id)
+    if source["file_type"] != "xlsx":
+        return source["normalized_df"]
+
+    if not range_str:
+        return source["normalized_df"]
+
+    if "," in range_str:
+        ranges = parse_multiple_excel_ranges(range_str)
+        subset_df, _ = apply_multiple_ranges_to_dataframe(source["raw_df"], ranges)
+    else:
+        range_info = parse_excel_range(range_str)
+        subset_df = apply_range_to_dataframe(source["raw_df"], range_info)
+
+    return normalize_xlsx(subset_df)
+
+
+def get_data_state_snapshot():
+    return {
+        "active_source_id": ACTIVE_SOURCE_ID,
+        "sources": [
+            {
+                "source_id": source_id,
+                "file_type": source.get("file_type"),
+                "file_name": source.get("file_name"),
+                "sheet_name": source.get("sheet_name"),
+                "available_sheets": source.get("available_sheets", []),
+                "source_path": source.get("source_path"),
+                "source_path_relative": source.get("source_path_relative"),
+            }
+            for source_id, source in SOURCES.items()
+        ],
     }
 
-    if parsed["type"] == "xlsx":
-        response_data["total_rows"] = len(RAW_DATA_STORAGE)
-        response_data["total_cols"] = len(RAW_DATA_STORAGE.columns)
 
-    return response_data
-
+@date_processing_bp.route("/sources/upload", methods=["POST"])
 @date_processing_bp.route("/upload", methods=["POST"])
-def upload():
-    # load uploaded file from frontend
+def upload_source():
     file = request.files["file"]
     requested_source_path = request.form.get("source_path", "")
+    sheet_name = request.form.get("sheet_name") or None
+    source_id = request.form.get("source_id") or None
     source_path, source_path_relative = _normalize_source_path(requested_source_path)
 
-    # parse the file data
-    parsed = parse_file(file)
-    response_data = _upload_from_parsed_payload(parsed, source_path, source_path_relative)
-    return jsonify(response_data)
+    parsed = parse_file(file, sheet_name=sheet_name)
+    payload = _register_parsed_source(parsed, source_path, source_path_relative, source_id=source_id)
+    return jsonify(payload)
 
 
+@date_processing_bp.route("/sources/load-path", methods=["POST"])
 @date_processing_bp.route("/upload-from-path", methods=["POST"])
-def upload_from_path():
+def load_source_from_path():
     source_path_input = request.form.get("source_path", "")
+    sheet_name = request.form.get("sheet_name") or None
+    source_id = request.form.get("source_id") or None
     if request.is_json:
         payload = request.get_json(silent=True) or {}
         source_path_input = payload.get("source_path", source_path_input)
+        sheet_name = payload.get("sheet_name", sheet_name)
+        source_id = payload.get("source_id", source_id)
 
     source_path, source_path_relative = _normalize_source_path(source_path_input)
     effective_path = source_path or source_path_relative
@@ -112,205 +162,110 @@ def upload_from_path():
         return jsonify({"error": "source_path is required"}), 400
 
     try:
-        parsed = parse_path(effective_path)
-        response_data = _upload_from_parsed_payload(parsed, source_path, source_path_relative)
-        return jsonify(response_data)
+        parsed = parse_path(effective_path, sheet_name=sheet_name)
+        payload = _register_parsed_source(parsed, source_path, source_path_relative, source_id=source_id)
+        return jsonify(payload)
     except Exception as exc:
-        return jsonify({"error": f"Path upload failed: {str(exc)}"}), 400
+        return jsonify({"error": f"Path load failed: {str(exc)}"}), 400
 
 
-@date_processing_bp.route("/apply-range", methods=["POST"])
-def apply_range():
-    """Apply Excel range selection to the uploaded XLSX data"""
-    global DATA_STORAGE, RAW_DATA_STORAGE, DATA_CONTEXT
-    
-    if RAW_DATA_STORAGE is None or len(RAW_DATA_STORAGE) == 0:
-        return jsonify({"error": "No Excel data uploaded"}), 400
-    
-    range_str = request.form.get("range", "").strip()
-    
-    if not range_str:
-        return jsonify({"error": "Range parameter is required"}), 400
-    
+@date_processing_bp.route("/sources/select-sheet", methods=["POST"])
+def select_source_sheet():
+    source_id = request.form.get("source_id", "")
+    sheet_name = request.form.get("sheet_name", "")
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        source_id = payload.get("source_id", source_id)
+        sheet_name = payload.get("sheet_name", sheet_name)
+
+    if not source_id:
+        return jsonify({"error": "source_id is required"}), 400
+    if not sheet_name:
+        return jsonify({"error": "sheet_name is required"}), 400
+
     try:
-        # Check if multiple ranges (contains comma)
-        if ',' in range_str:
-            # Multiple ranges
-            ranges = parse_multiple_excel_ranges(range_str)
-            subset_df, excel_columns = apply_multiple_ranges_to_dataframe(RAW_DATA_STORAGE, ranges)
-            
-            # Calculate combined range info
-            all_cols = []
-            all_rows = []
-            for r in ranges:
-                all_cols.extend(range(r['start_col'], r['end_col'] + 1))
-                all_rows.extend(range(r['start_row'], r['end_row'] + 1))
-            
-            min_col, max_col = min(all_cols), max(all_cols)
-            min_row, max_row = min(all_rows), max(all_rows)
-            
-            range_display = f"Multiple ranges: {range_str}"
-            total_cols = len(excel_columns)
-            total_rows = len(subset_df)
-            
+        source = _get_source(source_id)
+    except KeyError:
+        return jsonify({"error": "Unknown source_id"}), 404
+
+    if source.get("file_type") != "xlsx":
+        return jsonify({"error": "Sheet selection is only available for xlsx sources"}), 400
+
+    try:
+        if source.get("content_bytes"):
+            reparsed = parse_excel_bytes(source["content_bytes"], source.get("file_name") or "uploaded.xlsx", sheet_name=sheet_name)
+            reparsed["content_bytes"] = source["content_bytes"]
         else:
-            # Single range
-            range_info = parse_excel_range(range_str)
-            subset_df = apply_range_to_dataframe(RAW_DATA_STORAGE, range_info)
-            range_display = f"{range_info['start_col_str']}{range_info['start_row_str']}:{range_info['end_col_str']}{range_info['end_row_str']}"
-            total_cols = range_info['end_col'] - range_info['start_col'] + 1
-            total_rows = range_info['end_row'] - range_info['start_row'] + 1
-        
-        # Normalize the subset
-        normalized_df = normalize_xlsx(subset_df)
-        
-        # Update the global storage
-        DATA_STORAGE = normalized_df
-        DATA_CONTEXT = {**DATA_CONTEXT, "range_applied": range_str}
-        
-        # Generate preview
-        preview = normalized_df.head(5).fillna("").to_dict(orient="records")
-        
-        return jsonify({
-            "success": True,
-            "range_applied": range_str,
-            "columns": list(normalized_df.columns),
-            "preview": preview,
-            "row_count": len(normalized_df),
-            "range_info": {
-                "display": range_display,
-                "total_rows": total_rows,
-                "total_cols": total_cols
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({"error": f"Range application failed: {str(e)}"}), 400
+            effective_path = source.get("source_path") or source.get("source_path_relative")
+            if not effective_path:
+                return jsonify({"error": "Cannot change sheet without source path"}), 400
+            reparsed = parse_path(effective_path, sheet_name=sheet_name)
+
+        payload = _register_parsed_source(
+            reparsed,
+            source.get("source_path"),
+            source.get("source_path_relative"),
+            source_id=source_id,
+        )
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({"error": f"Sheet selection failed: {str(exc)}"}), 400
 
 
-def get_data_state_snapshot():
-    dataframe = DATA_STORAGE if isinstance(DATA_STORAGE, pd.DataFrame) else pd.DataFrame()
-    return {
-        "source": dict(DATA_CONTEXT),
-        "columns": list(dataframe.columns),
-        "row_count": len(dataframe),
-        "preview": dataframe.head(5).fillna("").to_dict(orient="records"),
-    }
+@date_processing_bp.route("/sources", methods=["GET"])
+def list_sources():
+    sources = [
+        _build_source_payload(source_id, source)
+        for source_id, source in SOURCES.items()
+    ]
+    return jsonify({"active_source_id": ACTIVE_SOURCE_ID, "sources": sources})
+
+
+@date_processing_bp.route("/sources/reset", methods=["POST"])
+def reset_sources():
+    global ACTIVE_SOURCE_ID
+    SOURCES.clear()
+    ACTIVE_SOURCE_ID = None
+    return jsonify({"success": True})
 
 
 @date_processing_bp.route("/preview-range", methods=["POST"])
 def preview_range():
-    """Preview what data would be selected by an Excel range without applying it"""
-    
-    if RAW_DATA_STORAGE is None or len(RAW_DATA_STORAGE) == 0:
-        return jsonify({"error": "No Excel data uploaded"}), 400
-    
+    source_id = request.form.get("source_id", "")
     range_str = request.form.get("range", "").strip()
-    
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        source_id = payload.get("source_id", source_id)
+        range_str = payload.get("range", range_str)
+
+    if not source_id:
+        return jsonify({"error": "source_id is required"}), 400
+
+    try:
+        source = _get_source(source_id)
+    except KeyError:
+        return jsonify({"error": "Unknown source_id"}), 404
+
+    if source["file_type"] != "xlsx":
+        return jsonify({"error": "Range preview is only supported for xlsx sources"}), 400
+
     if not range_str:
         return jsonify({"error": "Range parameter is required"}), 400
-    
+
     try:
-        # Check if multiple ranges (contains comma)
-        if ',' in range_str:
-            # Multiple ranges
-            ranges = parse_multiple_excel_ranges(range_str)
-            subset_df, excel_col_letters = apply_multiple_ranges_to_dataframe(RAW_DATA_STORAGE, ranges)
-            
-            if subset_df.empty:
-                return jsonify({
-                    "success": True,
-                    "preview": [],
-                    "excel_columns": [],
-                    "range_info": {
-                        "display": f"Multiple ranges: {range_str}",
-                        "total_rows": 0,
-                        "total_cols": 0
-                    }
-                })
-            
-            # Get preview (first 5 rows)
-            preview_df = subset_df.head(5).fillna("")
-            
-            # Create display column names
-            display_columns = []
-            original_to_display_mapping = {}
-            actual_columns = list(preview_df.columns)
-            
-            for i, col_name in enumerate(actual_columns):
-                excel_col = excel_col_letters[i] if i < len(excel_col_letters) else f"Col{i+1}"
-                
-                if str(col_name).startswith("Unnamed:") or pd.isna(col_name) or str(col_name).strip() == "":
-                    display_name = f"({excel_col})"
-                else:
-                    display_name = f"{col_name} ({excel_col})"
-                
-                display_columns.append(display_name)
-                original_to_display_mapping[col_name] = display_name
-            
-            # Rename columns
-            preview_df_renamed = preview_df.rename(columns=original_to_display_mapping)
-            preview = preview_df_renamed.to_dict(orient="records")
-            
-            return jsonify({
+        subset_df = get_dataframe_for_chart(source_id, range_str)
+        preview_df = subset_df.head(5).fillna("")
+        return jsonify(
+            {
                 "success": True,
-                "preview": preview,
-                "excel_columns": display_columns,
+                "preview": preview_df.to_dict(orient="records"),
+                "excel_columns": [str(col) for col in preview_df.columns],
                 "range_info": {
-                    "display": f"Multiple ranges: {range_str}",
+                    "display": range_str,
                     "total_rows": len(subset_df),
-                    "total_cols": len(actual_columns)
-                }
-            })
-            
-        else:
-            # Single range
-            range_info = parse_excel_range(range_str)
-            subset_df = apply_range_to_dataframe(RAW_DATA_STORAGE, range_info)
-            
-            # Get preview (first 5 rows)
-            preview_df = subset_df.head(5).fillna("")
-            
-            # Create display column names showing original names with Excel mapping in brackets
-            display_columns = []
-            original_to_display_mapping = {}
-            
-            # Use the actual number of columns in the subset, not the range calculation
-            actual_columns = list(preview_df.columns)
-            
-            for i, col_idx in enumerate(range(range_info['start_col'], range_info['end_col'] + 1)):
-                # Make sure we don't exceed the actual number of columns
-                if i >= len(actual_columns):
-                    break
-                    
-                from blueprints.data_processing.excel_utils import number_to_excel_column
-                excel_col = number_to_excel_column(col_idx)
-                original_col_name = str(actual_columns[i])
-                
-                # Check if column is unnamed (starts with "Unnamed:" or similar)
-                if original_col_name.startswith("Unnamed:") or pd.isna(actual_columns[i]) or original_col_name.strip() == "":
-                    display_name = f"({excel_col})"
-                else:
-                    display_name = f"{original_col_name} ({excel_col})"
-                
-                display_columns.append(display_name)
-                original_to_display_mapping[actual_columns[i]] = display_name
-            
-            # Rename columns to show original names with Excel mapping
-            preview_df_renamed = preview_df.rename(columns=original_to_display_mapping)
-            preview = preview_df_renamed.to_dict(orient="records")
-            
-            return jsonify({
-                "success": True,
-                "preview": preview,
-                "excel_columns": display_columns,
-                "range_info": {
-                    "start_cell": f"{range_info['start_col_str']}{range_info['start_row_str']}",
-                    "end_cell": f"{range_info['end_col_str']}{range_info['end_row_str']}",
-                    "total_rows": range_info['end_row'] - range_info['start_row'] + 1,
-                    "total_cols": range_info['end_col'] - range_info['start_col'] + 1
-                }
-            })
-        
-    except Exception as e:
-        return jsonify({"error": f"Range preview failed: {str(e)}"}), 400
+                    "total_cols": len(subset_df.columns),
+                },
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Range preview failed: {str(exc)}"}), 400

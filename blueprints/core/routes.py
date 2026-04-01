@@ -15,11 +15,6 @@ import blueprints.plots.routes as plot_routes
 
 TEMPLATE_STORAGE_DIR = Path(__file__).resolve().parents[2] / "saved_templates"
 
-# TODO: Parse all the elements of the template and apply them to the current state of the application, including data, chart types, and layout configurations.
-#   1) I need to remember which chart types were selected
-#   2) I need to remember the adjustments made to the layout (e.g., title, axis labels, colors)
-#   3) I need to remember the data sources (path to the source and which sheet was used if it's an Excel file)
-
 @core_bp.route("/", methods=['GET'])
 def init_main():
     return render_template(
@@ -47,24 +42,17 @@ def _build_application_state():
     }
 
 
-# TODO: Allow to take the current state of the application and save it as a template for future use.
 @core_bp.route("/create_template", methods=['POST'])
 def create_template():
     template_name = request.form.get("template_name")
-    source_path = request.form.get("source_path", "")
     if request.is_json:
         json_payload = request.get_json(silent=True) or {}
         template_name = json_payload.get("template_name", template_name)
-        source_path = json_payload.get("source_path", source_path)
 
     template_path, safe_name = _template_path(template_name)
     TEMPLATE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
     state = _build_application_state()
-    if source_path:
-        current_source = state.setdefault("data", {}).setdefault("source", {})
-        current_source["source_path"] = source_path
-        current_source["source_path_relative"] = source_path
     with open(template_path, "w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2)
 
@@ -83,7 +71,6 @@ def list_templates():
     return jsonify({"templates": templates})
 
 
-# TODO: Allow users to load a previously saved template and apply it to the current data or visualization.
 @core_bp.route("/load_template", methods=['GET'])
 def load_template():
     template_name = request.args.get("template_name", "")
