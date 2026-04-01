@@ -4,7 +4,6 @@ Utility functions for Excel-style range parsing and column mapping
 import re
 import pandas as pd
 
-
 def excel_column_to_number(col_str):
     """
     Convert Excel column string to 0-based column index.
@@ -34,6 +33,12 @@ def number_to_excel_column(num):
     
     return result
 
+# TODO: Make the range parsing more robust to handle various formats and edge cases, such as:
+# - 'A2:N28' or 'A2-N28' (traditional rectangular range)
+# - 'A' (entire column A)
+# - 'A2:A10' (column A, rows 2-10)
+# - 'A:C' (columns A through C, all rows)
+# - 'A2:A10,C2:C10' (multiple ranges) - not done yet
 
 def parse_excel_range(range_str):
     """
@@ -97,7 +102,7 @@ def parse_excel_range(range_str):
         
         if start_row > end_row:
             raise ValueError(f"Start row {start_row_str} must be <= end row {end_row_str}")
-        
+
         return {
             'start_col': start_col,
             'end_col': end_col,
@@ -181,34 +186,49 @@ def apply_multiple_ranges_to_dataframe(df, ranges):
     Apply multiple Excel range selections and combine them
     Returns DataFrame with selected columns from different ranges
     """
-    combined_df_parts = []
-    combined_columns = []
-    
+    parts = []
+    names = []
+    excel_cols = []
+
+    # Total number of columns/rows in the dataframe for bounds checking
+    total_cols = len(df.columns)
+    total_rows = len(df)
+
     for range_info in ranges:
-        # Apply each range individually
-        subset_df = apply_range_to_dataframe(df, range_info)
-        
-        # Get the column names for this range
         start_col = range_info['start_col']
         end_col = range_info['end_col']
-        
-        # Create Excel column names for this range
+        start_row = range_info.get('start_row', 0)
+        end_row = range_info.get('end_row', total_rows - 1)
+
+        # Clamp row indices to dataframe bounds
+        if start_row < 0:
+            start_row = 0
+        if end_row >= total_rows:
+            end_row = total_rows - 1
+        if end_row < start_row:
+            # nothing to extract from this range
+            continue
+
         for col_idx in range(start_col, end_col + 1):
-            if col_idx - start_col < len(subset_df.columns):
-                excel_col = number_to_excel_column(col_idx)
-                original_col = subset_df.columns[col_idx - start_col]
-                
-                # Rename column to include Excel reference
-                new_col_name = f"{original_col}"
-                combined_columns.append((new_col_name, excel_col))
-                combined_df_parts.append(subset_df.iloc[:, col_idx - start_col])
-    
-    # Combine all selected columns
-    if combined_df_parts:
-        combined_df = pd.concat(combined_df_parts, axis=1)
-        # Set proper column names
-        combined_df.columns = [col[0] for col in combined_columns]
-        return combined_df, [col[1] for col in combined_columns]
+            if col_idx < 0 or col_idx >= total_cols:
+                # skip columns outside dataframe
+                continue
+
+            # Extract column by absolute Excel index (map to df.columns)
+            col_name = df.columns[col_idx]
+
+            # Extract the slice of rows and reset index so different ranges align by row position
+            series = df.iloc[start_row:end_row + 1, col_idx].reset_index(drop=True)
+
+            parts.append(series)
+            names.append(str(col_name))
+            excel_cols.append(number_to_excel_column(col_idx))
+
+    if parts:
+        # Concatenate side-by-side. Different lengths are allowed; shorter series become NaN-padded.
+        combined_df = pd.concat(parts, axis=1)
+        combined_df.columns = names
+        return combined_df, excel_cols
     else:
         return pd.DataFrame(), []
 

@@ -1,8 +1,10 @@
 from flask import request, jsonify
 import pandas as pd
+from pathlib import Path
+from typing import Any, Dict
 
-from blueprints.data_processing.parser import parse_file
-from blueprints.data_processing.normalizer import normalize_yaml, normalize_xlsx
+from blueprints.data_processing.parser import parse_file, parse_path
+from blueprints.data_processing.normalizer import normalize_xlsx, normalize_parsed_payload
 from blueprints.data_processing.excel_utils import (
     parse_excel_range, apply_range_to_dataframe, get_range_preview,
     parse_multiple_excel_ranges, apply_multiple_ranges_to_dataframe
@@ -12,51 +14,115 @@ from . import date_processing_bp
 
 DATA_STORAGE = {}
 RAW_DATA_STORAGE = {}  # Store raw data for range operations
+DATA_CONTEXT: Dict[str, Any] = {
+    "file_type": None,
+    "file_name": None,
+    "source_path": None,
+    "source_path_relative": None,
+    "sheet_name": None,
+    "range_applied": None,
+}
 
-@date_processing_bp.route("/upload", methods=["POST"])
-def upload():
-    global DATA_STORAGE, RAW_DATA_STORAGE
 
-    # load uploaded file from frontend
-    file = request.files["file"]
+def _normalize_source_path(source_path):
+    if not source_path:
+        return None, None
 
-    # parse the file data
-    parsed = parse_file(file)
+    raw = source_path.strip()
+    if not raw:
+        return None, None
+
+    candidate = Path(raw).expanduser()
+
+    if candidate.is_absolute() or raw.startswith(("./", "../", "~/")):
+        absolute_path = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+        try:
+            relative_path = str(absolute_path.relative_to(Path.cwd()))
+        except ValueError:
+            relative_path = None
+        return str(absolute_path), relative_path
+
+    return None, raw
+
+
+def _build_data_context(parsed, source_path, source_path_relative):
+    file_type = parsed["type"]
+    return {
+        "file_type": file_type,
+        "file_name": parsed.get("file_name"),
+        "source_path": source_path,
+        "source_path_relative": source_path_relative,
+        "sheet_name": parsed.get("sheet_name") if file_type == "xlsx" else None,
+        "range_applied": None,
+    }
+
+
+def _upload_from_parsed_payload(parsed, source_path, source_path_relative):
+    global DATA_STORAGE, RAW_DATA_STORAGE, DATA_CONTEXT
+
+    normalized = normalize_parsed_payload(parsed)
+    df = normalized["dataframe"]
 
     if parsed["type"] == "xlsx":
         RAW_DATA_STORAGE = parsed["data"]
-        df = normalize_xlsx(parsed["data"])
-
     else:
-        records = normalize_yaml(parsed["data"])
-        df = pd.DataFrame(records)
         RAW_DATA_STORAGE = df
 
-    # define preview of the 
-    preview = df.head(5).fillna("").to_dict(orient="records")
-
-    # save the file data into a global variable -> avoid loading the file multiple times
+    DATA_CONTEXT = _build_data_context(parsed, source_path, source_path_relative)
     DATA_STORAGE = df
 
     response_data = {
-        "type": parsed["type"],
-        "columns": list(df.columns),
-        "preview": preview,
-        "row_count": len(df)
+        "type": normalized["type"],
+        "columns": normalized["columns"],
+        "preview": normalized["preview"],
+        "row_count": normalized["row_count"],
+        "source_path": source_path,
+        "source_path_relative": source_path_relative,
     }
-    
-    # For Excel files, also return sheet dimensions
+
     if parsed["type"] == "xlsx":
         response_data["total_rows"] = len(RAW_DATA_STORAGE)
         response_data["total_cols"] = len(RAW_DATA_STORAGE.columns)
 
+    return response_data
+
+@date_processing_bp.route("/upload", methods=["POST"])
+def upload():
+    # load uploaded file from frontend
+    file = request.files["file"]
+    requested_source_path = request.form.get("source_path", "")
+    source_path, source_path_relative = _normalize_source_path(requested_source_path)
+
+    # parse the file data
+    parsed = parse_file(file)
+    response_data = _upload_from_parsed_payload(parsed, source_path, source_path_relative)
     return jsonify(response_data)
+
+
+@date_processing_bp.route("/upload-from-path", methods=["POST"])
+def upload_from_path():
+    source_path_input = request.form.get("source_path", "")
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        source_path_input = payload.get("source_path", source_path_input)
+
+    source_path, source_path_relative = _normalize_source_path(source_path_input)
+    effective_path = source_path or source_path_relative
+    if not effective_path:
+        return jsonify({"error": "source_path is required"}), 400
+
+    try:
+        parsed = parse_path(effective_path)
+        response_data = _upload_from_parsed_payload(parsed, source_path, source_path_relative)
+        return jsonify(response_data)
+    except Exception as exc:
+        return jsonify({"error": f"Path upload failed: {str(exc)}"}), 400
 
 
 @date_processing_bp.route("/apply-range", methods=["POST"])
 def apply_range():
     """Apply Excel range selection to the uploaded XLSX data"""
-    global DATA_STORAGE, RAW_DATA_STORAGE
+    global DATA_STORAGE, RAW_DATA_STORAGE, DATA_CONTEXT
     
     if RAW_DATA_STORAGE is None or len(RAW_DATA_STORAGE) == 0:
         return jsonify({"error": "No Excel data uploaded"}), 400
@@ -100,6 +166,7 @@ def apply_range():
         
         # Update the global storage
         DATA_STORAGE = normalized_df
+        DATA_CONTEXT = {**DATA_CONTEXT, "range_applied": range_str}
         
         # Generate preview
         preview = normalized_df.head(5).fillna("").to_dict(orient="records")
@@ -119,6 +186,16 @@ def apply_range():
         
     except Exception as e:
         return jsonify({"error": f"Range application failed: {str(e)}"}), 400
+
+
+def get_data_state_snapshot():
+    dataframe = DATA_STORAGE if isinstance(DATA_STORAGE, pd.DataFrame) else pd.DataFrame()
+    return {
+        "source": dict(DATA_CONTEXT),
+        "columns": list(dataframe.columns),
+        "row_count": len(dataframe),
+        "preview": dataframe.head(5).fillna("").to_dict(orient="records"),
+    }
 
 
 @date_processing_bp.route("/preview-range", methods=["POST"])
@@ -237,4 +314,3 @@ def preview_range():
         
     except Exception as e:
         return jsonify({"error": f"Range preview failed: {str(e)}"}), 400
-
