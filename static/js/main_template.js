@@ -4,9 +4,10 @@ let columnContext = { source_id: null, range: null, columns: [] };
 
 $(document).ready(function () {
     $('#fileInput').on('change', function () {
-        const file = this.files[0];
-        if (!file) return;
-        uploadFileSource(file);
+        const files = Array.from(this.files || []);
+        if (files.length === 0) return;
+        uploadFileSources(files);
+        $(this).val('');
     });
 
     $('#loadSourcePathBtn').on('click', function () {
@@ -74,6 +75,10 @@ $(document).ready(function () {
         moveSelectedChartPreset(1);
     });
 
+    $('#generateDocxBtn').on('click', function () {
+        generateDocxReport();
+    });
+
     refreshTemplateList();
     refreshSources();
     refreshChartPresetList();
@@ -86,9 +91,10 @@ function getSelectedSource() {
 }
 
 function sourceLabel(source) {
-    const name = source.file_name || source.source_path_relative || source.source_path || source.source_id;
+    const name = source.file_name || source.path_value || source.source_path_relative || source.source_path || source.source_id;
     const sheetSuffix = source.sheet_name ? ` :: ${source.sheet_name}` : '';
-    return `${name}${sheetSuffix} [${source.file_type}]`;
+    const pathSuffix = source.path_mode && source.path_value ? ` | ${source.path_mode}:${source.path_value}` : '';
+    return `${name}${sheetSuffix} [${source.file_type}]${pathSuffix}`;
 }
 
 function syncSourceUI() {
@@ -206,6 +212,21 @@ function collectCustomColumnLabels(columns) {
     return labels.map((label, idx) => label || String(columns[idx]));
 }
 
+function normalizeChartKey(rawValue) {
+    return String(rawValue || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+
+function deriveChartKeyFallback() {
+    const title = $('#plotTitleInput').val().trim();
+    const chartType = $('#chartTypeInput').val();
+    const base = normalizeChartKey(title) || normalizeChartKey(chartType) || 'chart';
+    return base;
+}
+
 async function resolveColumnsForChart(source, rangeValue, updatePreview) {
     if (source.file_type !== 'xlsx') {
         const cols = Array.isArray(source.columns) ? source.columns : [];
@@ -274,25 +295,37 @@ async function refreshSources(selectedSourceId = null) {
     }
 }
 
-async function uploadFileSource(file) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('source_path', $('#sourcePathInput').val().trim());
+async function uploadFileSources(files) {
+    const requestedPath = $('#sourcePathInput').val().trim();
+    const failures = [];
+    let lastSourceId = null;
 
-    try {
-        const response = await fetch('/sources/upload', {
-            method: 'POST',
-            body: formData
-        });
-        const result = await response.json();
-        if (!response.ok) {
-            throw new Error(result.error || 'Upload failed');
+    for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('source_path', requestedPath);
+
+        try {
+            const response = await fetch('/sources/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Upload failed');
+            }
+            lastSourceId = result.source_id;
+        } catch (error) {
+            console.error('Upload error:', error);
+            failures.push(`${file.name}: ${error.message}`);
         }
-        await refreshSources(result.source_id);
-        Plotly.purge('plot');
-    } catch (error) {
-        console.error('Upload error:', error);
-        alert(`File upload failed: ${error.message}`);
+    }
+
+    await refreshSources(lastSourceId);
+    Plotly.purge('plot');
+
+    if (failures.length > 0) {
+        alert(`Some files failed to upload:\n- ${failures.join('\n- ')}`);
     }
 }
 
@@ -391,6 +424,7 @@ async function generatePlotRequest() {
     formData.append('source_id', source.source_id);
     formData.append('chart_type', $('#chartTypeInput').val());
     formData.append('title', $('#plotTitleInput').val());
+    formData.append('chart_key', normalizeChartKey($('#chartKeyInput').val()) || deriveChartKeyFallback());
 
     let rangeValue = null;
     if (source.file_type === 'xlsx') {
@@ -430,9 +464,11 @@ async function addChartPreset() {
     }
 
     const formData = new FormData();
+    const normalizedKey = normalizeChartKey($('#chartKeyInput').val()) || deriveChartKeyFallback();
     formData.append('source_id', source.source_id);
     formData.append('chart_type', $('#chartTypeInput').val());
     formData.append('title', $('#plotTitleInput').val());
+    formData.append('chart_key', normalizedKey);
 
     let rangeValue = null;
     if (source.file_type === 'xlsx') {
@@ -480,10 +516,12 @@ async function updateSelectedChartPreset() {
     }
 
     const formData = new FormData();
+    const normalizedKey = normalizeChartKey($('#chartKeyInput').val()) || deriveChartKeyFallback();
     formData.append('chart_id', chartId);
     formData.append('source_id', source.source_id);
     formData.append('chart_type', $('#chartTypeInput').val());
     formData.append('title', $('#plotTitleInput').val());
+    formData.append('chart_key', normalizedKey);
 
     let rangeValue = null;
 
@@ -542,7 +580,8 @@ async function refreshChartPresetList(selectedChartId = null) {
             const source = sourceState.sources.find((item) => item.source_id === chart.source_id);
             const base = chart.title && chart.title.trim() ? chart.title : `${chart.chart_type} #${index + 1}`;
             const suffix = source ? ` :: ${source.file_name || source.source_id}` : ` :: ${chart.source_id}`;
-            selector.append($('<option>').val(chart.id).text(`${base}${suffix}`));
+            const keyLabel = chart.chart_key ? ` [${chart.chart_key}]` : '';
+            selector.append($('<option>').val(chart.id).text(`${base}${keyLabel}${suffix}`));
         });
 
         const target = selectedChartId || chartState.active_chart_id || charts[0].id;
@@ -627,7 +666,8 @@ function renderSavedChartsPanel(charts) {
         const wrapper = $('<div>').css({ marginBottom: '20px', border: '1px solid #ddd', padding: '10px' });
         const title = chart.title && chart.title.trim() ? chart.title : `${chart.chart_type} #${index + 1}`;
         wrapper.append($('<div>').css({ fontWeight: 'bold', marginBottom: '4px' }).text(title));
-        wrapper.append($('<div>').css({ color: '#666', marginBottom: '8px', fontSize: '0.9em' }).text(`Source: ${sourceText}${chart.range ? ` | Range: ${chart.range}` : ''}`));
+        const keyText = chart.chart_key ? ` | Key: ${chart.chart_key}` : '';
+        wrapper.append($('<div>').css({ color: '#666', marginBottom: '8px', fontSize: '0.9em' }).text(`Source: ${sourceText}${chart.range ? ` | Range: ${chart.range}` : ''}${keyText}`));
 
         if (chart.error) {
             wrapper.append($('<div>').css({ color: '#b33' }).text(`Error: ${chart.error}`));
@@ -651,6 +691,7 @@ function loadSelectedChartPresetIntoForm() {
 
     if (chart.chart_type) $('#chartTypeInput').val(chart.chart_type);
     $('#plotTitleInput').val(chart.title || '');
+    $('#chartKeyInput').val(chart.chart_key || '');
     if (chart.source_id) {
         sourceState.active_source_id = chart.source_id;
         $('#sourceSelect').val(chart.source_id);
@@ -736,12 +777,13 @@ async function loadTemplate() {
         const templateChartState = state.chart || {};
         const sources = Array.isArray(dataState.sources) ? dataState.sources : [];
         const warnings = [];
+        const restoredSourceIds = new Set();
 
         await fetch('/sources/reset', { method: 'POST' });
         await fetch('/charts/reset', { method: 'POST' });
 
         for (const source of sources) {
-            const sourcePath = source.source_path || source.source_path_relative;
+            const sourcePath = source.path_value || source.source_path || source.source_path_relative;
             if (!sourcePath) {
                 warnings.push(`source ${source.file_name || source.source_id} has no path`);
                 continue;
@@ -751,6 +793,10 @@ async function loadTemplate() {
             payload.append('source_id', source.source_id);
             payload.append('source_path', sourcePath);
             payload.append('sheet_name', source.sheet_name || '');
+            payload.append('path_mode', source.path_mode || '');
+            payload.append('path_value', source.path_value || '');
+            payload.append('source_path_saved', source.source_path || '');
+            payload.append('source_path_relative_saved', source.source_path_relative || '');
 
             const sourceResponse = await fetch('/sources/load-path', {
                 method: 'POST',
@@ -759,6 +805,8 @@ async function loadTemplate() {
             const sourceResult = await sourceResponse.json();
             if (!sourceResponse.ok) {
                 warnings.push(`${sourcePath}: ${sourceResult.error || 'failed to load'}`);
+            } else {
+                restoredSourceIds.add(source.source_id);
             }
         }
 
@@ -777,10 +825,13 @@ async function loadTemplate() {
         await refreshChartPresetList();
         await renderSavedCharts();
 
+        const blockedCharts = (chartState.charts || []).filter((chart) => !restoredSourceIds.has(chart.source_id));
+
         const activeChart = chartState.charts.find((item) => item.id === chartState.active_chart_id) || chartState.charts[0];
         if (activeChart) {
             $('#chartTypeInput').val(activeChart.chart_type);
             $('#plotTitleInput').val(activeChart.title || '');
+            $('#chartKeyInput').val(activeChart.chart_key || '');
             if (activeChart.source_id) {
                 sourceState.active_source_id = activeChart.source_id;
                 $('#sourceSelect').val(activeChart.source_id);
@@ -794,7 +845,9 @@ async function loadTemplate() {
         }
 
         const warningText = warnings.length ? ` Warnings: ${warnings.join('; ')}` : '';
-        $('#templateInfo').text(`Loaded template '${result.template_name}'.${warningText}`);
+        const restoreText = ` Restored sources: ${restoredSourceIds.size}/${sources.length}.`;
+        const blockedText = blockedCharts.length ? ` Blocked charts (missing sources): ${blockedCharts.length}.` : '';
+        $('#templateInfo').text(`Loaded template '${result.template_name}'.${restoreText}${blockedText}${warningText}`);
     } catch (error) {
         console.error('Template load error:', error);
         $('#templateInfo').text(`Template load failed: ${error.message}`);
@@ -831,4 +884,49 @@ function renderRangePreview(preview, excelColumns) {
     });
 
     previewContainer.append(table);
+}
+
+async function generateDocxReport() {
+    const file = $('#docxTemplateInput')[0].files[0];
+    const templatePath = $('#docxTemplatePathInput').val().trim();
+    const outputName = $('#docxOutputNameInput').val().trim();
+
+    if (!file && !templatePath) {
+        $('#docxReportInfo').text('Select a DOCX file or provide a DOCX template path first.');
+        return;
+    }
+
+    const formData = new FormData();
+    if (file) {
+        formData.append('docx_template', file);
+    }
+    if (templatePath) {
+        formData.append('docx_template_path', templatePath);
+    }
+    if (outputName) {
+        formData.append('output_name', outputName);
+    }
+
+    $('#docxReportInfo').text('Generating report...');
+    try {
+        const response = await fetch('/report/generate-docx', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'DOCX generation failed');
+        }
+
+        const replacedCount = Array.isArray(result.replaced) ? result.replaced.length : 0;
+        const missingImages = (result.missing_images || []).join(', ');
+        const missingPlaceholders = (result.missing_placeholders || []).join(', ');
+        let msg = `Generated: ${result.output_docx_path}. Replaced ${replacedCount} placeholder(s).`;
+        if (missingImages) msg += ` Missing images for keys: ${missingImages}.`;
+        if (missingPlaceholders) msg += ` Unused exported keys: ${missingPlaceholders}.`;
+        $('#docxReportInfo').text(msg);
+    } catch (error) {
+        console.error('DOCX report generation error:', error);
+        $('#docxReportInfo').text(`DOCX generation failed: ${error.message}`);
+    }
 }

@@ -21,22 +21,67 @@ ACTIVE_SOURCE_ID = None
 
 def _normalize_source_path(source_path):
     if not source_path:
-        return None, None
+        return {
+            "path_mode": None,
+            "path_value": None,
+            "source_path": None,
+            "source_path_relative": None,
+        }
 
     raw = source_path.strip()
     if not raw:
-        return None, None
+        return {
+            "path_mode": None,
+            "path_value": None,
+            "source_path": None,
+            "source_path_relative": None,
+        }
 
     candidate = Path(raw).expanduser()
+    workspace_root = Path.cwd().resolve()
     if candidate.is_absolute() or raw.startswith(("./", "../", "~/")):
         absolute_path = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
         try:
-            relative_path = str(absolute_path.relative_to(Path.cwd()))
+            relative_path = str(absolute_path.relative_to(workspace_root))
         except ValueError:
             relative_path = None
-        return str(absolute_path), relative_path
+        if relative_path:
+            return {
+                "path_mode": "relative",
+                "path_value": relative_path,
+                "source_path": str(absolute_path),
+                "source_path_relative": relative_path,
+            }
+        return {
+            "path_mode": "absolute",
+            "path_value": str(absolute_path),
+            "source_path": str(absolute_path),
+            "source_path_relative": None,
+        }
 
-    return None, raw
+    relative_path = raw
+    absolute_path = (workspace_root / relative_path).resolve()
+    return {
+        "path_mode": "relative",
+        "path_value": relative_path,
+        "source_path": str(absolute_path),
+        "source_path_relative": relative_path,
+    }
+
+
+def _resolve_effective_source_path(path_mode, path_value, source_path, source_path_relative):
+    mode = (path_mode or "").strip().lower()
+    value = (path_value or "").strip()
+    if mode == "relative" and value:
+        return str((Path.cwd() / Path(value)).resolve())
+    if mode == "absolute" and value:
+        return str(Path(value).expanduser().resolve())
+
+    if source_path:
+        return str(Path(source_path).expanduser().resolve())
+    if source_path_relative:
+        return str((Path.cwd() / Path(source_path_relative)).resolve())
+    return None
 
 
 def _get_source(source_id):
@@ -56,6 +101,8 @@ def _build_source_payload(source_id, source):
         "available_sheets": source.get("available_sheets", []),
         "source_path": source.get("source_path"),
         "source_path_relative": source.get("source_path_relative"),
+        "path_mode": source.get("path_mode"),
+        "path_value": source.get("path_value"),
         "columns": list(normalized_df.columns),
         "row_count": len(normalized_df),
         "preview": normalized_df.head(5).fillna("").to_dict(orient="records"),
@@ -66,7 +113,7 @@ def _build_source_payload(source_id, source):
     return payload
 
 
-def _register_parsed_source(parsed, source_path, source_path_relative, source_id=None):
+def _register_parsed_source(parsed, path_metadata, source_id=None):
     global ACTIVE_SOURCE_ID
 
     normalized = normalize_parsed_payload(parsed)
@@ -84,8 +131,10 @@ def _register_parsed_source(parsed, source_path, source_path_relative, source_id
         "file_name": parsed.get("file_name"),
         "sheet_name": parsed.get("sheet_name") if file_type == "xlsx" else None,
         "available_sheets": parsed.get("available_sheets", []) if file_type == "xlsx" else [],
-        "source_path": source_path,
-        "source_path_relative": source_path_relative,
+        "source_path": path_metadata.get("source_path"),
+        "source_path_relative": path_metadata.get("source_path_relative"),
+        "path_mode": path_metadata.get("path_mode"),
+        "path_value": path_metadata.get("path_value"),
         "raw_df": raw_df,
         "normalized_df": normalized_df,
         "content_bytes": parsed.get("content_bytes") if file_type == "xlsx" else None,
@@ -124,6 +173,8 @@ def get_data_state_snapshot():
                 "available_sheets": source.get("available_sheets", []),
                 "source_path": source.get("source_path"),
                 "source_path_relative": source.get("source_path_relative"),
+                "path_mode": source.get("path_mode"),
+                "path_value": source.get("path_value"),
             }
             for source_id, source in SOURCES.items()
         ],
@@ -137,10 +188,10 @@ def upload_source():
     requested_source_path = request.form.get("source_path", "")
     sheet_name = request.form.get("sheet_name") or None
     source_id = request.form.get("source_id") or None
-    source_path, source_path_relative = _normalize_source_path(requested_source_path)
+    path_metadata = _normalize_source_path(requested_source_path)
 
     parsed = parse_file(file, sheet_name=sheet_name)
-    payload = _register_parsed_source(parsed, source_path, source_path_relative, source_id=source_id)
+    payload = _register_parsed_source(parsed, path_metadata, source_id=source_id)
     return jsonify(payload)
 
 
@@ -156,14 +207,41 @@ def load_source_from_path():
         sheet_name = payload.get("sheet_name", sheet_name)
         source_id = payload.get("source_id", source_id)
 
-    source_path, source_path_relative = _normalize_source_path(source_path_input)
-    effective_path = source_path or source_path_relative
+    path_mode = request.form.get("path_mode", "")
+    path_value = request.form.get("path_value", "")
+    source_path_saved = request.form.get("source_path_saved", "")
+    source_path_relative_saved = request.form.get("source_path_relative_saved", "")
+
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        path_mode = payload.get("path_mode", path_mode)
+        path_value = payload.get("path_value", path_value)
+        source_path_saved = payload.get("source_path_saved", source_path_saved)
+        source_path_relative_saved = payload.get("source_path_relative_saved", source_path_relative_saved)
+
+    normalized = _normalize_source_path(source_path_input)
+    if not normalized.get("path_value") and path_value:
+        normalized = {
+            "path_mode": path_mode or None,
+            "path_value": path_value or None,
+            "source_path": source_path_saved or None,
+            "source_path_relative": source_path_relative_saved or None,
+        }
+
+    effective_path = _resolve_effective_source_path(
+        normalized.get("path_mode"),
+        normalized.get("path_value"),
+        normalized.get("source_path"),
+        normalized.get("source_path_relative"),
+    )
     if not effective_path:
         return jsonify({"error": "source_path is required"}), 400
 
     try:
         parsed = parse_path(effective_path, sheet_name=sheet_name)
-        payload = _register_parsed_source(parsed, source_path, source_path_relative, source_id=source_id)
+        if not normalized.get("path_value"):
+            normalized = _normalize_source_path(effective_path)
+        payload = _register_parsed_source(parsed, normalized, source_id=source_id)
         return jsonify(payload)
     except Exception as exc:
         return jsonify({"error": f"Path load failed: {str(exc)}"}), 400
@@ -203,8 +281,12 @@ def select_source_sheet():
 
         payload = _register_parsed_source(
             reparsed,
-            source.get("source_path"),
-            source.get("source_path_relative"),
+            {
+                "path_mode": source.get("path_mode"),
+                "path_value": source.get("path_value"),
+                "source_path": source.get("source_path"),
+                "source_path_relative": source.get("source_path_relative"),
+            },
             source_id=source_id,
         )
         return jsonify(payload)

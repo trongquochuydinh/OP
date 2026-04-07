@@ -210,3 +210,4 @@ __marimo__/
 priklady*
 launch.json
 saved_templates/*
+generated_reports/*

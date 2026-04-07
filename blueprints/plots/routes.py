@@ -1,6 +1,10 @@
 from flask import request, jsonify
 import uuid
 import json
+import re
+from pathlib import Path
+from datetime import datetime
+import plotly.io as pio
 from . import plots_bp
 from blueprints.plots.builder import build_chart
 import blueprints.data_processing.routes as data_routes
@@ -9,6 +13,40 @@ CHART_STATE = {
     "active_chart_id": None,
     "charts": [],
 }
+
+REPORTS_DIR = Path(__file__).resolve().parents[2] / "generated_reports"
+
+
+def _slugify_key(raw_value):
+    candidate = re.sub(r"[^a-zA-Z0-9_-]", "_", str(raw_value or "").strip())
+    candidate = re.sub(r"_+", "_", candidate).strip("_")
+    return candidate
+
+
+def _derive_chart_key(chart_config, index=1, used_keys=None):
+    used = used_keys if used_keys is not None else set()
+
+    preferred = chart_config.get("chart_key")
+    title = chart_config.get("title")
+    chart_type = chart_config.get("chart_type")
+
+    base = _slugify_key(preferred) or _slugify_key(title) or _slugify_key(chart_type) or f"chart_{index}"
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+
+    used.add(candidate)
+    return candidate
+
+
+def _validate_chart_key_uniqueness(chart_id, chart_key):
+    for chart in CHART_STATE.get("charts", []):
+        if chart.get("id") == chart_id:
+            continue
+        if chart.get("chart_key") == chart_key:
+            raise ValueError(f"chart_key '{chart_key}' already exists")
 
 
 def _render_chart_config(df, chart_config):
@@ -62,12 +100,12 @@ def _render_from_source(chart_config):
 
             sanitized_labels.append(candidate)
 
-        rename_mapping = dict(zip(columns, sanitized_labels))
-        df_for_chart = df_for_chart.rename(columns=rename_mapping)
+        df_for_chart.columns = sanitized_labels
         plot_columns = sanitized_labels
 
     chart_payload = {
         "id": chart_config.get("id"),
+        "chart_key": chart_config.get("chart_key"),
         "source_id": source_id,
         "range": range_str,
         "chart_type": chart_config.get("chart_type"),
@@ -86,6 +124,17 @@ def _render_from_source(chart_config):
 
 def _upsert_chart(chart_config):
     global CHART_STATE
+
+    chart_key = _slugify_key(chart_config.get("chart_key"))
+    if not chart_key:
+        used_keys = {
+            chart.get("chart_key")
+            for chart in CHART_STATE.get("charts", [])
+            if chart.get("id") != chart_config.get("id") and chart.get("chart_key")
+        }
+        chart_key = _derive_chart_key(chart_config, len(CHART_STATE.get("charts", [])) + 1, used_keys)
+    _validate_chart_key_uniqueness(chart_config["id"], chart_key)
+    chart_config["chart_key"] = chart_key
 
     updated = False
     charts = CHART_STATE.get("charts", [])
@@ -109,12 +158,14 @@ def generate():
     chart_type = request.form.get("chart_type", "")
     title = request.form.get("title", "")
     range_str = request.form.get("range", "").strip() or None
+    chart_key = request.form.get("chart_key", "").strip()
     columns = json.loads(request.form.get("columns", "[]"))
     column_labels = json.loads(request.form.get("column_labels", "[]"))
 
     try:
         payload = {
             "id": request.form.get("chart_id", "preview"),
+            "chart_key": _slugify_key(chart_key) or "preview",
             "source_id": source_id,
             "range": range_str,
             "chart_type": chart_type,
@@ -139,6 +190,7 @@ def new_chart():
     chart_type = request.form.get("chart_type", "")
     title = request.form.get("title", "")
     range_str = request.form.get("range", "").strip() or None
+    chart_key = request.form.get("chart_key", "").strip()
     columns = json.loads(request.form.get("columns", "[]"))
     column_labels = json.loads(request.form.get("column_labels", "[]"))
 
@@ -150,6 +202,7 @@ def new_chart():
     chart_id = request.form.get("chart_id") or str(uuid.uuid4())
     payload = {
         "id": chart_id,
+        "chart_key": _slugify_key(chart_key),
         "source_id": source_id,
         "range": range_str,
         "chart_type": chart_type,
@@ -225,9 +278,21 @@ def reorder_chart():
 @plots_bp.post("/render_charts")
 def render_charts():
     rendered_charts = []
+    known_sources = {
+        source.get("source_id")
+        for source in data_routes.get_data_state_snapshot().get("sources", [])
+    }
 
     for chart in CHART_STATE.get("charts", []):
         chart_payload = dict(chart)
+        source_id = chart_payload.get("source_id")
+        if source_id not in known_sources:
+            chart_payload["traces"] = []
+            chart_payload["layout"] = {}
+            chart_payload["error"] = f"Source unavailable for chart: {source_id}. Reload template sources first."
+            rendered_charts.append(chart_payload)
+            continue
+
         try:
             _, traces, layout = _render_from_source(chart)
             chart_payload["traces"] = traces
@@ -253,6 +318,7 @@ def hydrate_charts():
         charts = []
 
     valid_charts = []
+    used_keys = set()
     for chart in charts:
         if not isinstance(chart, dict):
             continue
@@ -260,9 +326,11 @@ def hydrate_charts():
             continue
         if not chart.get("source_id"):
             continue
+        chart_key = _derive_chart_key(chart, len(valid_charts) + 1, used_keys)
         valid_charts.append(
             {
                 "id": chart.get("id") or str(uuid.uuid4()),
+                "chart_key": chart_key,
                 "source_id": chart.get("source_id"),
                 "range": chart.get("range"),
                 "chart_type": chart.get("chart_type"),
@@ -298,3 +366,81 @@ def get_chart_state_snapshot():
         "active_chart_id": CHART_STATE.get("active_chart_id"),
         "charts": [dict(chart) for chart in CHART_STATE.get("charts", [])],
     }
+
+
+def export_charts_to_pngs(output_root=None, width=1400, height=800, scale=2):
+    charts = CHART_STATE.get("charts", [])
+    if not charts:
+        return {
+            "output_dir": None,
+            "exported": [],
+            "warnings": ["No charts to export"],
+            "errors": [],
+            "image_map": {},
+        }
+
+    if output_root is None:
+        output_root = REPORTS_DIR / datetime.utcnow().strftime("%Y%m%d_%H%M%S") / "charts"
+    else:
+        output_root = Path(output_root)
+
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    exported = []
+    warnings = []
+    errors = []
+    image_map = {}
+
+    used_keys = set()
+    for index, chart in enumerate(charts, start=1):
+        chart_copy = dict(chart)
+        chart_key = _derive_chart_key(chart_copy, index, used_keys)
+        chart_copy["chart_key"] = chart_key
+
+        try:
+            _, traces, layout = _render_from_source(chart_copy)
+            image_name = f"{index:02d}_{chart_key}.png"
+            image_path = output_root / image_name
+            figure = {
+                "data": traces,
+                "layout": layout,
+            }
+            pio.write_image(figure, str(image_path), width=width, height=height, scale=scale)
+            exported.append(
+                {
+                    "chart_id": chart_copy.get("id"),
+                    "chart_key": chart_key,
+                    "path": str(image_path),
+                }
+            )
+            image_map[chart_key] = str(image_path)
+        except Exception as exc:
+            errors.append(
+                {
+                    "chart_id": chart_copy.get("id"),
+                    "chart_key": chart_key,
+                    "error": str(exc),
+                }
+            )
+
+    if not exported and not errors:
+        warnings.append("No charts were exported")
+
+    return {
+        "output_dir": str(output_root),
+        "exported": exported,
+        "warnings": warnings,
+        "errors": errors,
+        "image_map": image_map,
+    }
+
+
+@plots_bp.post("/charts/export-png")
+def export_charts_png():
+    payload = request.get_json(silent=True) or {}
+    width = int(payload.get("width", 1400))
+    height = int(payload.get("height", 800))
+    scale = int(payload.get("scale", 2))
+
+    export_result = export_charts_to_pngs(width=width, height=height, scale=scale)
+    return jsonify({"success": True, **export_result})
