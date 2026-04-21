@@ -4,6 +4,8 @@ Utility functions for Excel-style range parsing and column mapping
 import re
 import pandas as pd
 
+MAX_EXCEL_ROWS = 1048576
+
 def excel_column_to_number(col_str):
     """
     Convert Excel column string to 0-based column index.
@@ -33,12 +35,31 @@ def number_to_excel_column(num):
     
     return result
 
+
+def _normalize_range_token(range_str):
+    if range_str is None:
+        return ""
+
+    normalized = str(range_str).strip().upper()
+    normalized = normalized.replace("\u2013", "-").replace("\u2014", "-")
+    normalized = normalized.replace(";", ",")
+    normalized = re.sub(r"\s+", "", normalized)
+    normalized = normalized.replace("-", ":")
+    return normalized
+
+
+def _validate_row_number(row_str):
+    row = int(row_str)
+    if row < 1:
+        raise ValueError("Row numbers must start from 1")
+    return row
+
 # TODO: Make the range parsing more robust to handle various formats and edge cases, such as:
 # - 'A2:N28' or 'A2-N28' (traditional rectangular range)
 # - 'A' (entire column A)
 # - 'A2:A10' (column A, rows 2-10)
 # - 'A:C' (columns A through C, all rows)
-# - 'A2:A10,C2:C10' (multiple ranges) - not done yet
+# - multiple ranges with mixed formats and spacing quirks (e.g. 'A2:A10, C2:C10', 'A, C:E')
 
 def parse_excel_range(range_str):
     """
@@ -49,8 +70,9 @@ def parse_excel_range(range_str):
     - 'A:C' (columns A through C, all rows)
     Returns dict with start_col, end_col, start_row, end_row (all 0-based)
     """
-    # Normalize separators to :
-    range_str = range_str.replace('-', ':').upper().strip()
+    range_str = _normalize_range_token(range_str)
+    if not range_str:
+        raise ValueError("Range is empty")
     
     # Case 1: Single column letter (e.g., 'A')
     if re.match(r'^[A-Z]+$', range_str):
@@ -59,11 +81,11 @@ def parse_excel_range(range_str):
             'start_col': col_num,
             'end_col': col_num,
             'start_row': 0,  # Start from first row
-            'end_row': 1048575,  # Excel max rows - 1 (0-based)
+            'end_row': MAX_EXCEL_ROWS - 1,  # Excel max rows - 1 (0-based)
             'start_col_str': range_str,
             'end_col_str': range_str,
             'start_row_str': '1',
-            'end_row_str': '1048576'
+            'end_row_str': str(MAX_EXCEL_ROWS)
         }
     
     # Case 2: Column range without row numbers (e.g., 'A:C')
@@ -80,11 +102,11 @@ def parse_excel_range(range_str):
             'start_col': start_col,
             'end_col': end_col,
             'start_row': 0,
-            'end_row': 1048575,
+            'end_row': MAX_EXCEL_ROWS - 1,
             'start_col_str': start_col_str,
             'end_col_str': end_col_str,
             'start_row_str': '1',
-            'end_row_str': '1048576'
+            'end_row_str': str(MAX_EXCEL_ROWS)
         }
     
     # Case 3: Traditional range with row numbers (e.g., 'A2:N28')
@@ -94,8 +116,10 @@ def parse_excel_range(range_str):
         
         start_col = excel_column_to_number(start_col_str)
         end_col = excel_column_to_number(end_col_str)
-        start_row = int(start_row_str) - 1  # Convert to 0-based
-        end_row = int(end_row_str) - 1      # Convert to 0-based
+        start_row_num = _validate_row_number(start_row_str)
+        end_row_num = _validate_row_number(end_row_str)
+        start_row = start_row_num - 1  # Convert to 0-based
+        end_row = end_row_num - 1      # Convert to 0-based
         
         if start_col > end_col:
             raise ValueError(f"Start column {start_col_str} must be <= end column {end_col_str}")
@@ -119,7 +143,7 @@ def parse_excel_range(range_str):
     if single_cell_match:
         col_str, row_str = single_cell_match.groups()
         col_num = excel_column_to_number(col_str)
-        row_num = int(row_str) - 1  # Convert to 0-based
+        row_num = _validate_row_number(row_str) - 1  # Convert to 0-based
         
         return {
             'start_col': col_num,
@@ -132,8 +156,10 @@ def parse_excel_range(range_str):
             'end_row_str': row_str
         }
     
-    # If none of the patterns match
-    raise ValueError(f"Invalid range format: {range_str}. Supported formats: A2:N28, A:C, A, A2")
+    if ":" in range_str and re.match(r'^[A-Z]*:\d+$|^\d+:[A-Z]*$', range_str):
+        raise ValueError(f"Invalid range format: {range_str}. Partial references like 'A:10' are not supported")
+
+    raise ValueError(f"Invalid range format: {range_str}. Supported formats: A2:N28, A:C, A, A2, A2:A10")
 
 
 def parse_multiple_excel_ranges(range_str):
@@ -142,25 +168,32 @@ def parse_multiple_excel_ranges(range_str):
     e.g., 'A2:A10,C2:C10' or 'A1:B5,D1:E5' or 'B,D' (simple column list)
     Returns list of range info dicts
     """
-    # Split by comma and clean up whitespace
-    range_parts = [part.strip() for part in range_str.split(',')]
-    
-    if len(range_parts) == 1:
-        # Single range, use existing function
-        return [parse_excel_range(range_parts[0])]
-    
-    # Multiple ranges - check if they're simple column letters
+    normalized_input = _normalize_range_token(range_str)
+    if not normalized_input:
+        raise ValueError("Range is empty")
+
+    range_parts = normalized_input.split(',')
+    if any(not part for part in range_parts):
+        raise ValueError(f"Invalid range list: {range_str}. Empty range segment found")
+
     ranges = []
+    seen = set()
     for part in range_parts:
-        # Check if it's just a column letter (e.g., 'A', 'B', 'AA')
-        if re.match(r'^[A-Z]+$', part.upper()):
-            # Convert simple column letter to full column range
-            col_letter = part.upper()
-            ranges.append(parse_excel_range(col_letter))  # This will use the 'A' format
-        else:
-            # Regular range format
-            ranges.append(parse_excel_range(part))
-    
+        parsed = parse_excel_range(part)
+        dedupe_key = (
+            parsed['start_col'],
+            parsed['end_col'],
+            parsed['start_row'],
+            parsed['end_row'],
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        ranges.append(parsed)
+
+    if not ranges:
+        raise ValueError(f"No valid ranges found in: {range_str}")
+
     return ranges
 
 
@@ -193,6 +226,7 @@ def apply_multiple_ranges_to_dataframe(df, ranges):
     # Total number of columns/rows in the dataframe for bounds checking
     total_cols = len(df.columns)
     total_rows = len(df)
+    seen_cols = set()
 
     for range_info in ranges:
         start_col = range_info['start_col']
@@ -213,6 +247,11 @@ def apply_multiple_ranges_to_dataframe(df, ranges):
             if col_idx < 0 or col_idx >= total_cols:
                 # skip columns outside dataframe
                 continue
+
+            dedupe_key = (col_idx, start_row, end_row)
+            if dedupe_key in seen_cols:
+                continue
+            seen_cols.add(dedupe_key)
 
             # Extract column by absolute Excel index (map to df.columns)
             col_name = df.columns[col_idx]

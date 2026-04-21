@@ -43,7 +43,8 @@ def build_barchart(df, x_col, y_col, title):
     traces = [{
         "x": df[x_col].astype(str).tolist(),
         "y": df[y_col].tolist(),
-        "type": "bar"
+        "type": "bar",
+        "name": y_col
     }]
 
     layout = {
