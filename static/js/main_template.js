@@ -1,17 +1,59 @@
 let sourceState = { active_source_id: null, sources: [] };
 let chartState = { active_chart_id: null, charts: [] };
 let columnContext = { source_id: null, range: null, columns: [] };
+let lastLoadedSourcePath = '';
+let isSyncingSourcePathInput = false;
+let isAutoLoadingSheet = false;
+
+function setSourceStatus(message) {
+    const statusEl = $('#sourceStatus');
+    if (statusEl.length > 0) {
+        statusEl.text(message || '');
+        return;
+    }
+    if (message) {
+        $('#rangeInfo').text(message);
+    }
+}
+
+function updateChartActionAvailability() {
+    const source = getSelectedSource();
+    const hasSource = !!source;
+    const requiresRange = hasSource && source.file_type === 'xlsx';
+    const hasRange = !requiresRange || !!$('#excelRangeInput').val().trim();
+    const canUseChartActions = hasSource && hasRange;
+
+    $('.generate-plot').prop('disabled', !canUseChartActions);
+    $('#addChartBtn').prop('disabled', !canUseChartActions);
+    $('#updateChartBtn').prop('disabled', !canUseChartActions || !$('#chartPresetList').val());
+}
+
+function isDesktopBridgeAvailable() {
+    return !!(window.pywebview && window.pywebview.api);
+}
+
+function updateDesktopControlsVisibility() {
+    const visible = isDesktopBridgeAvailable();
+    $('.desktop-only').toggle(visible);
+}
+
+window.addEventListener('pywebviewready', function () {
+    updateDesktopControlsVisibility();
+});
 
 $(document).ready(function () {
-    $('#fileInput').on('change', function () {
-        const files = Array.from(this.files || []);
-        if (files.length === 0) return;
-        uploadFileSources(files);
-        $(this).val('');
+    $('#sourcePathInput').on('change', function () {
+        loadSourceFromPathInput();
+    });
+    $('#sourcePathInput').on('keydown', function (event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            loadSourceFromPathInput();
+        }
     });
 
-    $('#loadSourcePathBtn').on('click', function () {
-        loadSourceFromPathInput();
+    $('#desktopSelectFilesBtn').on('click', function () {
+        pickDesktopSourceFiles();
     });
 
     $('#sourceSelect').on('change', function () {
@@ -19,8 +61,10 @@ $(document).ready(function () {
         syncSourceUI();
     });
 
-    $('#loadSheetBtn').on('click', function () {
-        loadSelectedSheetForSource();
+    $('#sheetSelect').on('change', function () {
+        if (!isAutoLoadingSheet) {
+            loadSelectedSheetForSource();
+        }
     });
 
     $('#chartPresetList').on('change', function () {
@@ -29,6 +73,9 @@ $(document).ready(function () {
 
     $('#useCustomColumnLabels').on('change', function () {
         refreshColumnLabelEditor();
+    });
+    $('#excelRangeInput').on('input', function () {
+        updateChartActionAvailability();
     });
 
     $('.generate-plot').on('click', function () {
@@ -49,6 +96,9 @@ $(document).ready(function () {
 
     $('#loadTemplateBtn').on('click', function () {
         loadTemplate();
+    });
+    $('#resetWorkspaceBtn').on('click', function () {
+        resetWorkspace();
     });
 
     $('#addChartBtn').on('click', function () {
@@ -79,9 +129,15 @@ $(document).ready(function () {
         generateDocxReport();
     });
 
+    $('#desktopBrowseDocxBtn').on('click', function () {
+        browseDesktopDocxTemplate();
+    });
+
+    updateDesktopControlsVisibility();
     refreshTemplateList();
     refreshSources();
     refreshChartPresetList();
+    updateChartActionAvailability();
 });
 
 function getSelectedSource() {
@@ -103,11 +159,15 @@ function syncSourceUI() {
         $('#excelRangeDiv').hide();
         $('#sheetControls').hide();
         setColumnContext(null, null, []);
+        setSourceStatus('Load a source to start charting.');
+        updateChartActionAvailability();
         return;
     }
 
     const pathValue = source.source_path || source.source_path_relative || '';
+    isSyncingSourcePathInput = true;
     $('#sourcePathInput').val(pathValue);
+    isSyncingSourcePathInput = false;
 
     if (source.file_type === 'xlsx') {
         $('#sheetControls').show();
@@ -118,7 +178,9 @@ function syncSourceUI() {
             sheetSelect.append($('<option>').val(sheetName).text(sheetName));
         });
         if (source.sheet_name) {
+            isAutoLoadingSheet = true;
             sheetSelect.val(source.sheet_name);
+            isAutoLoadingSheet = false;
         }
 
         $('#excelRangeDiv').show();
@@ -126,11 +188,14 @@ function syncSourceUI() {
             $('#rangeInfo').text(`File dimensions: ${source.total_rows} rows x ${source.total_cols} columns`);
         }
         setColumnContext(source.source_id, null, []);
+        setSourceStatus('Excel source loaded. Select range before generating or saving charts.');
     } else {
         $('#sheetControls').hide();
         $('#excelRangeDiv').hide();
         setColumnContext(source.source_id, null, source.columns || []);
+        setSourceStatus('Source loaded. Configure chart settings and generate.');
     }
+    updateChartActionAvailability();
 }
 
 function setColumnContext(sourceId, rangeValue, columns) {
@@ -290,49 +355,98 @@ async function refreshSources(selectedSourceId = null) {
         sourceState.active_source_id = target;
         select.val(target);
         syncSourceUI();
+        setSourceStatus(`Loaded ${sourceState.sources.length} source(s).`);
     } catch (error) {
         console.error('Sources refresh error:', error);
+        setSourceStatus(`Could not refresh sources: ${error.message}`);
     }
 }
 
-async function uploadFileSources(files) {
-    const requestedPath = $('#sourcePathInput').val().trim();
+async function loadSourcePaths(paths) {
+    const normalizedPaths = Array.isArray(paths) ? paths.filter(Boolean) : [];
+    if (normalizedPaths.length === 0) {
+        return;
+    }
+
     const failures = [];
     let lastSourceId = null;
 
-    for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('source_path', requestedPath);
-
+    for (const sourcePath of normalizedPaths) {
         try {
-            const response = await fetch('/sources/upload', {
+            const formData = new FormData();
+            formData.append('source_path', sourcePath);
+            const response = await fetch('/sources/load-path', {
                 method: 'POST',
                 body: formData
             });
             const result = await response.json();
             if (!response.ok) {
-                throw new Error(result.error || 'Upload failed');
+                throw new Error(result.error || 'Could not load source path');
             }
             lastSourceId = result.source_id;
         } catch (error) {
-            console.error('Upload error:', error);
-            failures.push(`${file.name}: ${error.message}`);
+            failures.push(`${sourcePath}: ${error.message}`);
         }
     }
 
     await refreshSources(lastSourceId);
     Plotly.purge('plot');
+    if (lastSourceId && normalizedPaths.length > 0) {
+        lastLoadedSourcePath = String(normalizedPaths[normalizedPaths.length - 1]).trim();
+        setSourceStatus(`Loaded ${normalizedPaths.length} source path(s).`);
+    }
 
     if (failures.length > 0) {
-        alert(`Some files failed to upload:\n- ${failures.join('\n- ')}`);
+        alert(`Some sources failed to load:\n- ${failures.join('\n- ')}`);
+    }
+}
+
+async function pickDesktopSourceFiles() {
+    if (!isDesktopBridgeAvailable()) {
+        alert('Desktop file picker is not available in browser mode.');
+        return;
+    }
+
+    try {
+        const pickedPaths = await window.pywebview.api.pick_source_files();
+        await loadSourcePaths(pickedPaths || []);
+        if (Array.isArray(pickedPaths) && pickedPaths.length > 0) {
+            $('#sourcePathInput').val(pickedPaths[0]);
+            setSourceStatus(`Desktop selected ${pickedPaths.length} file(s) and loaded them.`);
+        }
+    } catch (error) {
+        console.error('Desktop source file picker error:', error);
+        alert(`Desktop file picker failed: ${error.message}`);
+    }
+}
+
+async function browseDesktopDocxTemplate() {
+    if (!isDesktopBridgeAvailable()) {
+        alert('Desktop DOCX picker is not available in browser mode.');
+        return;
+    }
+
+    try {
+        const docxPath = await window.pywebview.api.pick_docx_file();
+        if (docxPath) {
+            $('#docxTemplatePathInput').val(docxPath);
+        }
+    } catch (error) {
+        console.error('Desktop DOCX picker error:', error);
+        alert(`Desktop DOCX picker failed: ${error.message}`);
     }
 }
 
 async function loadSourceFromPathInput() {
     const sourcePath = $('#sourcePathInput').val().trim();
+    if (isSyncingSourcePathInput) {
+        return;
+    }
     if (!sourcePath) {
-        alert('Enter source path first.');
+        lastLoadedSourcePath = '';
+        return;
+    }
+    if (sourcePath === lastLoadedSourcePath) {
         return;
     }
 
@@ -349,6 +463,8 @@ async function loadSourceFromPathInput() {
         }
         await refreshSources(result.source_id);
         Plotly.purge('plot');
+        lastLoadedSourcePath = sourcePath;
+        setSourceStatus('Source path loaded successfully.');
     } catch (error) {
         console.error('Load path source error:', error);
         alert(`Load source failed: ${error.message}`);
@@ -381,6 +497,7 @@ async function loadSelectedSheetForSource() {
 
         await refreshSources(source.source_id);
         $('#rangeInfo').text(`Loaded sheet '${sheetName}'`);
+        setSourceStatus(`Loaded sheet '${sheetName}'.`);
         Plotly.purge('plot');
     } catch (error) {
         console.error('Sheet load error:', error);
@@ -551,6 +668,7 @@ async function updateSelectedChartPreset() {
         chartState = result.chart_state || chartState;
         await refreshChartPresetList(chartId);
         await renderSavedCharts();
+        updateChartActionAvailability();
         $('#templateInfo').text('Updated selected chart preset.');
     } catch (error) {
         console.error('Update chart preset error:', error);
@@ -573,6 +691,7 @@ async function refreshChartPresetList(selectedChartId = null) {
         const charts = chartState.charts || [];
         if (charts.length === 0) {
             selector.append($('<option>').val('').text('No chart presets'));
+            updateChartActionAvailability();
             return;
         }
 
@@ -586,6 +705,7 @@ async function refreshChartPresetList(selectedChartId = null) {
 
         const target = selectedChartId || chartState.active_chart_id || charts[0].id;
         selector.val(target);
+        updateChartActionAvailability();
     } catch (error) {
         console.error('Chart preset list error:', error);
     }
@@ -604,6 +724,7 @@ async function removeSelectedChartPreset() {
         chartState = result.chart_state || { active_chart_id: null, charts: [] };
         await refreshChartPresetList();
         await renderSavedCharts();
+        updateChartActionAvailability();
     } catch (error) {
         console.error('Remove chart preset error:', error);
         alert(`Failed to remove chart preset: ${error.message}`);
@@ -634,6 +755,7 @@ async function moveSelectedChartPreset(step) {
         chartState = result.chart_state || { active_chart_id: null, charts: [] };
         await refreshChartPresetList(chartId);
         await renderSavedCharts();
+        updateChartActionAvailability();
     } catch (error) {
         console.error('Reorder chart preset error:', error);
         alert(`Failed to reorder chart preset: ${error.message}`);
@@ -702,6 +824,7 @@ function loadSelectedChartPresetIntoForm() {
     }
     setColumnContext(chart.source_id || null, chart.range || null, chart.columns || []);
     setCustomColumnLabels(chart.column_labels || []);
+    updateChartActionAvailability();
 }
 
 async function saveTemplate() {
@@ -783,9 +906,9 @@ async function loadTemplate() {
         await fetch('/charts/reset', { method: 'POST' });
 
         for (const source of sources) {
-            const sourcePath = source.path_value || source.source_path || source.source_path_relative;
+            const sourcePath = source.source_path_canonical || source.source_path || source.path_value || source.source_path_relative;
             if (!sourcePath) {
-                warnings.push(`source ${source.file_name || source.source_id} has no path`);
+                warnings.push(`Source '${source.file_name || source.source_id}' has no persisted path.`);
                 continue;
             }
 
@@ -793,10 +916,9 @@ async function loadTemplate() {
             payload.append('source_id', source.source_id);
             payload.append('source_path', sourcePath);
             payload.append('sheet_name', source.sheet_name || '');
-            payload.append('path_mode', source.path_mode || '');
-            payload.append('path_value', source.path_value || '');
-            payload.append('source_path_saved', source.source_path || '');
-            payload.append('source_path_relative_saved', source.source_path_relative || '');
+            if (source.source_path_relative) {
+                payload.append('source_path_relative_saved', source.source_path_relative);
+            }
 
             const sourceResponse = await fetch('/sources/load-path', {
                 method: 'POST',
@@ -804,7 +926,7 @@ async function loadTemplate() {
             });
             const sourceResult = await sourceResponse.json();
             if (!sourceResponse.ok) {
-                warnings.push(`${sourcePath}: ${sourceResult.error || 'failed to load'}`);
+                warnings.push(`Could not load '${sourcePath}': ${sourceResult.error || 'failed to load'}`);
             } else {
                 restoredSourceIds.add(source.source_id);
             }
@@ -848,9 +970,54 @@ async function loadTemplate() {
         const restoreText = ` Restored sources: ${restoredSourceIds.size}/${sources.length}.`;
         const blockedText = blockedCharts.length ? ` Blocked charts (missing sources): ${blockedCharts.length}.` : '';
         $('#templateInfo').text(`Loaded template '${result.template_name}'.${restoreText}${blockedText}${warningText}`);
+        updateChartActionAvailability();
     } catch (error) {
         console.error('Template load error:', error);
         $('#templateInfo').text(`Template load failed: ${error.message}`);
+        updateChartActionAvailability();
+    }
+}
+
+async function resetWorkspace() {
+    try {
+        await fetch('/sources/reset', { method: 'POST' });
+        await fetch('/charts/reset', { method: 'POST' });
+
+        sourceState = { active_source_id: null, sources: [] };
+        chartState = { active_chart_id: null, charts: [] };
+        setColumnContext(null, null, []);
+        lastLoadedSourcePath = '';
+
+        isSyncingSourcePathInput = true;
+        $('#sourcePathInput').val('');
+        isSyncingSourcePathInput = false;
+        $('#excelRangeInput').val('');
+        $('#plotTitleInput').val('');
+        $('#chartKeyInput').val('');
+        $('#useCustomColumnLabels').prop('checked', false);
+        refreshColumnLabelEditor();
+
+        $('#templateNameInput').val('');
+        $('#docxTemplateInput').val('');
+        $('#docxTemplatePathInput').val('');
+        $('#docxOutputNameInput').val('');
+        $('#docxReportInfo').text('');
+
+        $('#rangeInfo').text('');
+        $('#rangePreview').remove();
+        $('#savedChartsContainer').empty();
+        Plotly.purge('plot');
+
+        await refreshSources();
+        await refreshChartPresetList();
+        await refreshTemplateList();
+
+        setSourceStatus('Workspace reset. Load a source to start charting.');
+        $('#templateInfo').text('Workspace reset. Saved templates are unchanged.');
+        updateChartActionAvailability();
+    } catch (error) {
+        console.error('Workspace reset error:', error);
+        $('#templateInfo').text(`Workspace reset failed: ${error.message}`);
     }
 }
 
@@ -888,8 +1055,20 @@ function renderRangePreview(preview, excelColumns) {
 
 async function generateDocxReport() {
     const file = $('#docxTemplateInput')[0].files[0];
-    const templatePath = $('#docxTemplatePathInput').val().trim();
+    let templatePath = $('#docxTemplatePathInput').val().trim();
     const outputName = $('#docxOutputNameInput').val().trim();
+
+    if (!file && !templatePath && isDesktopBridgeAvailable()) {
+        try {
+            const pickedPath = await window.pywebview.api.pick_docx_file();
+            if (pickedPath) {
+                templatePath = pickedPath;
+                $('#docxTemplatePathInput').val(pickedPath);
+            }
+        } catch (error) {
+            console.error('Desktop DOCX picker error:', error);
+        }
+    }
 
     if (!file && !templatePath) {
         $('#docxReportInfo').text('Select a DOCX file or provide a DOCX template path first.');

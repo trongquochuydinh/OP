@@ -94,6 +94,32 @@
             max-height: 200px;
             overflow: auto;
         }
+
+        .workflow-section {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 14px;
+            background: #fafafa;
+        }
+
+        .workflow-section h3 {
+            margin: 0 0 10px 0;
+            font-size: 1.05rem;
+        }
+
+        .section-note {
+            margin-top: 6px;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .section-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
     </style>
 </head>
 <body>
@@ -102,114 +128,118 @@
 
     <h2>Chart Plotter</h2>
 
-    <div class="input-div">
+    <div class="workflow-section">
+        <h3>Step 1: Select Data Source and Range</h3>
         <div>
-            <label for="fileInput">Select File(s) (.xlsx, .yml): </label>
-            <input type="file" id="fileInput" accept=".xlsx, .yml" multiple>
-            <div style="margin-top: 6px;">
-                <label for="sourcePathInput" style="font-weight: normal;">Source path (saved in template): </label>
-                <input type="text" id="sourcePathInput" placeholder="/absolute/or/relative/path/to/file.xlsx" style="min-width: 360px;">
-                <button type="button" id="loadSourcePathBtn">Load Path Source</button>
+            <label>Select file(s) (.xlsx, .yml): </label>
+            <button type="button" id="desktopSelectFilesBtn" class="desktop-only" style="display: none;">Desktop: Select Files</button>
+        </div>
+        <div style="margin-top: 8px;">
+            <label for="sourcePathInput" style="font-weight: normal;">Source path:</label>
+            <input type="text" id="sourcePathInput" placeholder="/absolute/path/to/file.xlsx" style="min-width: 360px;">
+        </div>
+        <div class="section-note">Use Desktop: Select Files for normal workflow. Manual path entry auto-loads on change or Enter.</div>
+        <div style="margin-top: 8px;">
+            <label for="sourceSelect" style="font-weight: normal;">Active source:</label>
+            <select id="sourceSelect" style="min-width: 320px;"></select>
+        </div>
+        <div id="sheetControls" style="margin-top: 8px; display: none;">
+            <label for="sheetSelect" style="font-weight: normal;">Sheet:</label>
+            <select id="sheetSelect" style="min-width: 240px;"></select>
+        </div>
+        <div id="sourceStatus" class="section-note"></div>
+
+        <div id="excelRangeDiv" style="display: none; margin-top: 8px;">
+            <label for="excelRangeInput">Excel Range (e.g., A2:N28, A, A:C, A,C):</label>
+            <div class="section-actions">
+                <input type="text" id="excelRangeInput" placeholder="e.g., A2:N28, A, A:C, or B,D" style="flex: 1;">
+                <button type="button" id="previewRangeBtn">Preview Range</button>
+                <button type="button" id="applyRangeBtn">Apply Range</button>
             </div>
-            <div style="margin-top: 6px;">
-                <label for="sourceSelect" style="font-weight: normal;">Active source:</label>
-                <select id="sourceSelect" style="min-width: 320px;"></select>
-            </div>
-            <div id="sheetControls" style="margin-top: 6px; display: none;">
-                <label for="sheetSelect" style="font-weight: normal;">Sheet:</label>
-                <select id="sheetSelect" style="min-width: 240px;"></select>
-                <button type="button" id="loadSheetBtn">Load selected sheet</button>
+            <div id="rangeInfo" class="section-note"></div>
+            <div style="font-size: 0.85em; color: #888; margin-top: 5px;">
+                <strong>Plotting logic:</strong> 1 column = frequency chart, 2 columns = X vs Y, 3+ columns = multi-series mode<br>
+                <strong>Range formats:</strong> A2:C10 (data subset), A (column), A:C (columns range), B,D (non-neighboring full columns)
             </div>
         </div>
+    </div>
 
-        <div>
-            <label>Select Chart type: </label>
+    <div class="workflow-section">
+        <h3>Step 2: Configure and Build Charts</h3>
+        <div class="edit-div">
+            <label for="chartTypeInput">Select chart type</label>
             <select id="chartTypeInput" class="chart-type-select">
                 {% for key, label in chart_types.items() %}
                     <option value="{{ key }}">{{ label }}</option>
                 {% endfor %}
             </select>
+
+            <label style="margin-top: 10px;">Title</label>
+            <input id="plotTitleInput" type="text" placeholder="Plot title">
+
+            <label style="margin-top: 8px;">Chart key (for DOCX placeholders)</label>
+            <input id="chartKeyInput" type="text" placeholder="e.g. retention_overview">
+
+            <div id="columnLabelControls" style="margin-top: 10px;">
+                <label for="useCustomColumnLabels" style="font-weight: normal;">
+                    <input type="checkbox" id="useCustomColumnLabels"> Use custom column labels
+                </label>
+                <div id="columnLabelEditor" style="display: none; margin-top: 8px;"></div>
+            </div>
         </div>
 
+        <div class="section-actions" style="margin-top: 12px;">
+            <button class="generate-plot">
+                Generate plot
+            </button>
+            <button type="button" id="addChartBtn">
+                Save chart to template
+            </button>
+            <button type="button" id="updateChartBtn">
+                Update selected preset
+            </button>
+            <button type="button" id="renderChartsBtn">
+                Render saved charts
+            </button>
+        </div>
+        <div class="section-actions" style="margin-top: 10px;">
+            <select id="chartPresetList" style="min-width: 240px;"></select>
+            <button type="button" id="moveChartUpBtn">
+                Move up
+            </button>
+            <button type="button" id="moveChartDownBtn">
+                Move down
+            </button>
+            <button type="button" id="removeChartBtn">
+                Remove preset
+            </button>
+        </div>
     </div>
-    <br>
 
-    <div class="edit-div">
+    <div class="workflow-section">
+        <h3>Step 3: Save Template and Generate Report</h3>
         <div id="templateControls" style="margin-bottom: 12px;">
             <label for="templateNameInput">Template name</label>
-            <div style="display: flex; gap: 10px; align-items: center;">
+            <div class="section-actions">
                 <input id="templateNameInput" type="text" placeholder="e.g. baseline_salary_view" style="flex: 1;">
                 <button type="button" id="saveTemplateBtn">Save Template</button>
                 <select id="templateList" style="min-width: 220px;"></select>
                 <button type="button" id="loadTemplateBtn">Load Template</button>
+                <button type="button" id="resetWorkspaceBtn">Reset Workspace</button>
             </div>
-            <div id="templateInfo" style="margin-top: 6px; font-size: 0.9em; color: #666;"></div>
+            <div class="section-note">Reset Workspace clears the current session state only and keeps saved templates on disk.</div>
+            <div id="templateInfo" class="section-note"></div>
         </div>
 
-        <!-- Excel Range Selection (only shown for .xlsx files) -->
-        <div id="excelRangeDiv" style="display: none;">
-            <label for="excelRangeInput">Excel Range (e.g., A2:N28, A, A:C, A,C):</label>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <input type="text" id="excelRangeInput" placeholder="e.g., A2:N28, A, A:C, or B,D" style="flex: 1;">
-                <button type="button" id="previewRangeBtn">Preview Range</button>
-                <button type="button" id="applyRangeBtn">Apply Range</button>
-            </div>
-            <div id="rangeInfo" style="margin-top: 5px; font-size: 0.9em; color: #666;"></div>
-            <div style="font-size: 0.85em; color: #888; margin-top: 5px;">
-                <strong>Plotting logic:</strong> 1 column = frequency chart, 2 columns = X vs Y, 3+ columns = multi-series mode<br>
-                <strong>Range formats:</strong> A2:C10 (data subset), A (column), A:C (columns range), B,D (non-neighboring full columns)
-            </div>
-            <br>
-        </div>
-
-        <label>Title</label>
-        <input id="plotTitleInput" type="text" placeholder="Plot title">
-
-        <label style="margin-top: 8px;">Chart key (for DOCX placeholders)</label>
-        <input id="chartKeyInput" type="text" placeholder="e.g. retention_overview">
-
-        <div id="columnLabelControls" style="margin-top: 10px;">
-            <label for="useCustomColumnLabels" style="font-weight: normal;">
-                <input type="checkbox" id="useCustomColumnLabels"> Use custom column labels
-            </label>
-            <div id="columnLabelEditor" style="display: none; margin-top: 8px;"></div>
-        </div>
-    </div>
-
-    <div>
-        <button class="generate-plot">
-            Generate plot
-        </button>
-        <button type="button" id="addChartBtn">
-            Save chart to template
-        </button>
-        <button type="button" id="updateChartBtn">
-            Update selected preset
-        </button>
-        <button type="button" id="renderChartsBtn">
-            Render saved charts
-        </button>
-        <select id="chartPresetList" style="min-width: 240px;"></select>
-        <button type="button" id="moveChartUpBtn">
-            Move up
-        </button>
-        <button type="button" id="moveChartDownBtn">
-            Move down
-        </button>
-        <button type="button" id="removeChartBtn">
-            Remove preset
-        </button>
-    </div>
-
-    <div style="margin-top: 14px; border: 1px solid #ddd; padding: 10px;">
         <label style="display: block; margin-bottom: 6px;">Report generation (DOCX placeholder mode)</label>
-        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <div class="section-actions">
             <input type="file" id="docxTemplateInput" accept=".docx">
             <input type="text" id="docxTemplatePathInput" placeholder="or path to template.docx" style="min-width: 320px;">
+            <button type="button" id="desktopBrowseDocxBtn" class="desktop-only" style="display: none;">Browse DOCX</button>
             <input type="text" id="docxOutputNameInput" placeholder="optional output name" style="min-width: 220px;">
             <button type="button" id="generateDocxBtn">Generate DOCX report</button>
         </div>
-        <div id="docxReportInfo" style="margin-top: 8px; font-size: 0.9em; color: #666;"></div>
+        <div id="docxReportInfo" class="section-note"></div>
     </div>
 
     <div id="plot"></div>
