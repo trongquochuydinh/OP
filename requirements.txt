@@ -4,11 +4,13 @@ flask-session
 imageio==2.33.1
 imageio-ffmpeg==0.4.9
 Jinja2==3.1.2
+numpy==1.26.4
 openpyxl
 pandas==2.0.3
 pillow==10.2.0
 plotly==5.18.0
 kaleido==0.2.1
 python-docx==1.1.2
+pywebview==5.1
 PyYAML
 typing_extensions==4.9.0

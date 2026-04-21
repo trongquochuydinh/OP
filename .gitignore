@@ -211,3 +211,4 @@ priklady*
 launch.json
 saved_templates/*
 generated_reports/*
+.tmp_*

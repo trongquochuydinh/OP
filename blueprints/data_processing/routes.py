@@ -1,5 +1,4 @@
 from flask import request, jsonify
-import pandas as pd
 from pathlib import Path
 from typing import Any, Dict
 import uuid
@@ -39,46 +38,38 @@ def _normalize_source_path(source_path):
 
     candidate = Path(raw).expanduser()
     workspace_root = Path.cwd().resolve()
-    if candidate.is_absolute() or raw.startswith(("./", "../", "~/")):
-        absolute_path = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
-        try:
-            relative_path = str(absolute_path.relative_to(workspace_root))
-        except ValueError:
-            relative_path = None
-        if relative_path:
-            return {
-                "path_mode": "relative",
-                "path_value": relative_path,
-                "source_path": str(absolute_path),
-                "source_path_relative": relative_path,
-            }
-        return {
-            "path_mode": "absolute",
-            "path_value": str(absolute_path),
-            "source_path": str(absolute_path),
-            "source_path_relative": None,
-        }
+    absolute_path = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+    try:
+        relative_path = str(absolute_path.relative_to(workspace_root))
+    except ValueError:
+        relative_path = None
 
-    relative_path = raw
-    absolute_path = (workspace_root / relative_path).resolve()
+    # Desktop-first contract: canonical persistence always stores absolute path.
     return {
-        "path_mode": "relative",
-        "path_value": relative_path,
+        "path_mode": "absolute",
+        "path_value": str(absolute_path),
         "source_path": str(absolute_path),
         "source_path_relative": relative_path,
     }
 
 
-def _resolve_effective_source_path(path_mode, path_value, source_path, source_path_relative):
+def _resolve_effective_source_path(explicit_source_path, path_mode, path_value, source_path, source_path_relative):
+    explicit = (explicit_source_path or "").strip()
+    if explicit:
+        return str(Path(explicit).expanduser().resolve())
+
     mode = (path_mode or "").strip().lower()
     value = (path_value or "").strip()
-    if mode == "relative" and value:
-        return str((Path.cwd() / Path(value)).resolve())
     if mode == "absolute" and value:
         return str(Path(value).expanduser().resolve())
 
-    if source_path:
-        return str(Path(source_path).expanduser().resolve())
+    canonical_saved = (source_path or "").strip()
+    if canonical_saved:
+        return str(Path(canonical_saved).expanduser().resolve())
+
+    # Compatibility fallback for older template snapshots.
+    if mode == "relative" and value:
+        return str((Path.cwd() / Path(value)).resolve())
     if source_path_relative:
         return str((Path.cwd() / Path(source_path_relative)).resolve())
     return None
@@ -93,13 +84,15 @@ def _get_source(source_id):
 
 def _build_source_payload(source_id, source):
     normalized_df = source["normalized_df"]
+    canonical_path = source.get("source_path")
     payload = {
         "source_id": source_id,
         "file_type": source["file_type"],
         "file_name": source.get("file_name"),
         "sheet_name": source.get("sheet_name"),
         "available_sheets": source.get("available_sheets", []),
-        "source_path": source.get("source_path"),
+        "source_path": canonical_path,
+        "source_path_canonical": canonical_path,
         "source_path_relative": source.get("source_path_relative"),
         "path_mode": source.get("path_mode"),
         "path_value": source.get("path_value"),
@@ -172,6 +165,7 @@ def get_data_state_snapshot():
                 "sheet_name": source.get("sheet_name"),
                 "available_sheets": source.get("available_sheets", []),
                 "source_path": source.get("source_path"),
+                "source_path_canonical": source.get("source_path"),
                 "source_path_relative": source.get("source_path_relative"),
                 "path_mode": source.get("path_mode"),
                 "path_value": source.get("path_value"),
@@ -229,6 +223,7 @@ def load_source_from_path():
         }
 
     effective_path = _resolve_effective_source_path(
+        source_path_input,
         normalized.get("path_mode"),
         normalized.get("path_value"),
         normalized.get("source_path"),
