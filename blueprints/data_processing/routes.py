@@ -17,6 +17,33 @@ from . import date_processing_bp
 SOURCES: Dict[str, Dict[str, Any]] = {}
 ACTIVE_SOURCE_ID = None
 
+PIE_STYLE_MAX_SLICES = 100
+
+
+def _pie_style_meta(subset_df):
+    """Slice count and labels for pie styling UI (matches build_chart frequency / two-col pie order)."""
+    try:
+        if subset_df is None or getattr(subset_df, "empty", True):
+            return {"slice_count": 0, "slice_labels": []}
+        cols = list(subset_df.columns)
+        if not cols:
+            return {"slice_count": 0, "slice_labels": []}
+        if len(cols) >= 2:
+            c0, c1 = cols[0], cols[1]
+            df2 = subset_df[[c0, c1]].dropna(how="any")
+            labels = df2[c0].astype(str).tolist()
+        else:
+            c0 = cols[0]
+            vc = subset_df[c0].dropna().value_counts()
+            labels = vc.index.astype(str).tolist()
+        n = len(labels)
+        if n == 0:
+            return {"slice_count": 0, "slice_labels": []}
+        cap = min(n, PIE_STYLE_MAX_SLICES)
+        return {"slice_count": cap, "slice_labels": labels[:cap]}
+    except Exception:
+        return {"slice_count": 0, "slice_labels": []}
+
 
 def _normalize_source_path(source_path):
     if not source_path:
@@ -310,6 +337,7 @@ def reset_sources():
 def preview_range():
     source_id = request.form.get("source_id", "")
     range_str = request.form.get("range", "").strip()
+    payload = {}
     if request.is_json:
         payload = request.get_json(silent=True) or {}
         source_id = payload.get("source_id", source_id)
@@ -329,18 +357,42 @@ def preview_range():
     if not range_str:
         return jsonify({"error": "Range parameter is required"}), 400
 
+    max_rows = 500
+    max_cols = 50
+    try:
+        max_rows = min(int(payload.get("max_rows", max_rows)), 2000)
+        max_cols = min(int(payload.get("max_cols", max_cols)), 200)
+    except (TypeError, ValueError):
+        max_rows = 500
+        max_cols = 50
+
     try:
         subset_df = get_dataframe_for_chart(source_id, range_str)
-        preview_df = subset_df.head(5).fillna("")
+        total_rows = len(subset_df)
+        total_cols = len(subset_df.columns)
+        excel_columns = [str(col) for col in subset_df.columns]
+        row_slice = min(total_rows, max_rows)
+        col_slice = min(total_cols, max_cols)
+        preview_df = subset_df.iloc[:row_slice, :col_slice].fillna("")
+        pie_style = _pie_style_meta(subset_df)
         return jsonify(
             {
                 "success": True,
                 "preview": preview_df.to_dict(orient="records"),
-                "excel_columns": [str(col) for col in preview_df.columns],
+                "excel_columns": excel_columns,
+                "pie_style": pie_style,
                 "range_info": {
                     "display": range_str,
-                    "total_rows": len(subset_df),
-                    "total_cols": len(subset_df.columns),
+                    "total_rows": total_rows,
+                    "total_cols": total_cols,
+                },
+                "truncation": {
+                    "rows_truncated": total_rows > row_slice,
+                    "cols_truncated": total_cols > col_slice,
+                    "preview_rows": row_slice,
+                    "preview_cols": col_slice,
+                    "max_rows": max_rows,
+                    "max_cols": max_cols,
                 },
             }
         )

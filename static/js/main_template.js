@@ -1,6 +1,8 @@
 let sourceState = { active_source_id: null, sources: [] };
 let chartState = { active_chart_id: null, charts: [] };
-let columnContext = { source_id: null, range: null, columns: [] };
+let columnContext = { source_id: null, range: null, columns: [], pie_style: null };
+/** Display labels from loaded presets or preview header edits (parallel to columnContext.columns). */
+let pendingColumnLabels = [];
 let lastLoadedSourcePath = '';
 let isSyncingSourcePathInput = false;
 let isAutoLoadingSheet = false;
@@ -16,6 +18,15 @@ function setSourceStatus(message) {
     }
 }
 
+function updateCountsModeAvailability() {
+    const cols = columnContext.columns || [];
+    const ok = cols.length >= 2;
+    $('#countsModeCheckbox').prop('disabled', !ok);
+    if (!ok && $('#countsModeCheckbox').is(':checked')) {
+        $('#countsModeCheckbox').prop('checked', false);
+    }
+}
+
 function updateChartActionAvailability() {
     const source = getSelectedSource();
     const hasSource = !!source;
@@ -26,6 +37,7 @@ function updateChartActionAvailability() {
     $('.generate-plot').prop('disabled', !canUseChartActions);
     $('#addChartBtn').prop('disabled', !canUseChartActions);
     $('#updateChartBtn').prop('disabled', !canUseChartActions || !$('#chartPresetList').val());
+    updateCountsModeAvailability();
 }
 
 function isDesktopBridgeAvailable() {
@@ -71,9 +83,39 @@ $(document).ready(function () {
         loadSelectedChartPresetIntoForm();
     });
 
-    $('#useCustomColumnLabels').on('change', function () {
-        refreshColumnLabelEditor();
+    $('#chartTypeInput').on('change', function () {
+        syncPlotStyleFieldVisibility();
+        const captured = captureSeriesStyleFromDom();
+        refreshSeriesStyleRows({
+            initialSeries: fitSeriesInitial(captured, getSeriesStyleSlotCount(), DEFAULT_SERIES_COLORS)
+        });
     });
+
+    $('#countsModeCheckbox').on('change', function () {
+        const captured = captureSeriesStyleFromDom();
+        refreshSeriesStyleRows({
+            initialSeries: fitSeriesInitial(captured, getSeriesStyleSlotCount(), DEFAULT_SERIES_COLORS)
+        });
+    });
+
+    $(document).on('input', '#rangePreview .preview-col-header', function () {
+        const cols = columnContext.columns || [];
+        if (!cols.length) return;
+        const idx = Number($(this).attr('data-col-index'));
+        if (Number.isNaN(idx) || idx < 0 || idx >= cols.length) return;
+        if (pendingColumnLabels.length !== cols.length) {
+            pendingColumnLabels = cols.map((c, i) => {
+                const inp = $(`#rangePreview .preview-col-header[data-col-index="${i}"]`);
+                return inp.length ? inp.val().trim() || String(c) : String(c);
+            });
+        }
+        pendingColumnLabels[idx] = $(this).val().trim() || String(cols[idx]);
+        const captured = captureSeriesStyleFromDom();
+        refreshSeriesStyleRows({
+            initialSeries: fitSeriesInitial(captured, getSeriesStyleSlotCount(), DEFAULT_SERIES_COLORS)
+        });
+    });
+
     $('#excelRangeInput').on('input', function () {
         updateChartActionAvailability();
     });
@@ -137,6 +179,8 @@ $(document).ready(function () {
     refreshTemplateList();
     refreshSources();
     refreshChartPresetList();
+    syncPlotStyleFieldVisibility();
+    refreshSeriesStyleRows();
     updateChartActionAvailability();
 });
 
@@ -158,7 +202,7 @@ function syncSourceUI() {
     if (!source) {
         $('#excelRangeDiv').hide();
         $('#sheetControls').hide();
-        setColumnContext(null, null, []);
+        setColumnContext(null, null, [], null);
         setSourceStatus('Load a source to start charting.');
         updateChartActionAvailability();
         return;
@@ -187,94 +231,53 @@ function syncSourceUI() {
         if (source.total_rows && source.total_cols) {
             $('#rangeInfo').text(`File dimensions: ${source.total_rows} rows x ${source.total_cols} columns`);
         }
-        setColumnContext(source.source_id, null, []);
+        setColumnContext(source.source_id, null, [], null);
         setSourceStatus('Excel source loaded. Select range before generating or saving charts.');
     } else {
         $('#sheetControls').hide();
         $('#excelRangeDiv').hide();
-        setColumnContext(source.source_id, null, source.columns || []);
+        setColumnContext(source.source_id, null, source.columns || [], null);
         setSourceStatus('Source loaded. Configure chart settings and generate.');
     }
     updateChartActionAvailability();
 }
 
-function setColumnContext(sourceId, rangeValue, columns) {
+function columnsAligned(prevCols, newCols) {
+    const a = Array.isArray(prevCols) ? prevCols : [];
+    const b = Array.isArray(newCols) ? newCols : [];
+    if (a.length !== b.length) return false;
+    return a.every((v, i) => String(v) === String(b[i]));
+}
+
+function setColumnContext(sourceId, rangeValue, columns, pieStyle) {
+    const cols = Array.isArray(columns) ? columns : [];
+    const prevCols = columnContext.columns || [];
+    const colsUnchanged = columnsAligned(prevCols, cols);
+    const pie = pieStyle != null && typeof pieStyle === 'object' ? pieStyle : null;
+    const prevPie = columnContext.pie_style || null;
+    const pieUnchanged = JSON.stringify(prevPie || {}) === JSON.stringify(pie || {});
+
+    if (!colsUnchanged) {
+        pendingColumnLabels = [];
+    }
     columnContext = {
         source_id: sourceId,
         range: rangeValue,
-        columns: Array.isArray(columns) ? columns : []
+        columns: cols,
+        pie_style: pie
     };
-    refreshColumnLabelEditor();
+    if (!colsUnchanged || !pieUnchanged) {
+        refreshSeriesStyleRows();
+    }
+    /* When columns are unchanged (e.g. Generate re-resolves the same range), skip rebuilding
+       series rows — refreshSeriesStyleRows() would reset color pickers to defaults. */
 }
 
-function refreshColumnLabelEditor() {
-    const useCustom = $('#useCustomColumnLabels').is(':checked');
-    const editor = $('#columnLabelEditor');
-    if (!useCustom) {
-        editor.hide();
-        return;
-    }
-
-    editor.show();
-    const existingValues = [];
-    editor.find('.column-label-input').each(function () {
-        existingValues.push($(this).val());
-    });
-    editor.empty();
-
-    if (!columnContext.columns || columnContext.columns.length === 0) {
-        editor.append($('<div>').css({ color: '#666' }).text('No columns available yet. Preview/select a range or source first.'));
-        return;
-    }
-
-    columnContext.columns.forEach((columnName, index) => {
-        const row = $('<div>').css({ display: 'flex', gap: '8px', marginBottom: '4px', alignItems: 'center' });
-        row.append($('<div>').css({ minWidth: '220px', fontSize: '0.9em' }).text(`Column ${index + 1}: ${columnName}`));
-        row.append(
-            $('<input>')
-                .attr('type', 'text')
-                .attr('data-col-index', String(index))
-                .addClass('column-label-input')
-                .val(existingValues[index] || columnName)
-                .css({ flex: '1', minWidth: '220px' })
-        );
-        editor.append(row);
-    });
-}
-
-function setCustomColumnLabels(labels) {
-    const normalized = Array.isArray(labels) ? labels : [];
-    const useCustom = normalized.length > 0;
-    $('#useCustomColumnLabels').prop('checked', useCustom);
-    refreshColumnLabelEditor();
-
-    if (!useCustom) {
-        return;
-    }
-
-    $('#columnLabelEditor .column-label-input').each(function () {
-        const idx = Number($(this).attr('data-col-index'));
-        if (idx >= 0 && idx < normalized.length) {
-            $(this).val(normalized[idx]);
-        }
-    });
-}
-
-function collectCustomColumnLabels(columns) {
-    if (!$('#useCustomColumnLabels').is(':checked')) {
-        return [];
-    }
-
-    const labels = [];
-    $('#columnLabelEditor .column-label-input').each(function () {
-        labels.push($(this).val().trim());
-    });
-
-    if (labels.length !== columns.length) {
-        return columns.map((value) => String(value));
-    }
-
-    return labels.map((label, idx) => label || String(columns[idx]));
+/** Restore labels from a loaded preset when they match the current column list. */
+function applyLoadedColumnLabels(labels) {
+    const normalized = Array.isArray(labels) ? labels.map((x) => String(x)) : [];
+    const cols = columnContext.columns || [];
+    pendingColumnLabels = normalized.length === cols.length ? normalized : [];
 }
 
 function normalizeChartKey(rawValue) {
@@ -292,10 +295,316 @@ function deriveChartKeyFallback() {
     return base;
 }
 
+function getActiveChartPreset() {
+    const chartId = $('#chartPresetList').val();
+    if (!chartId) return null;
+    return (chartState.charts || []).find((item) => item.id === chartId) || null;
+}
+
+const DEFAULT_SERIES_COLORS = [
+    '#636EFA',
+    '#EF553B',
+    '#00CC96',
+    '#AB63FA',
+    '#FFA15A',
+    '#19D3F3',
+    '#FF6692',
+    '#B6E880',
+    '#FF97FF',
+    '#FECB52'
+];
+
+const MAX_PIE_STYLE_SLICES = 100;
+
+function getPieStyleSliceCount() {
+    const ps = columnContext.pie_style;
+    if (!ps || typeof ps.slice_count !== 'number' || ps.slice_count <= 0) return 0;
+    return Math.min(ps.slice_count, MAX_PIE_STYLE_SLICES);
+}
+
+function normalizeHexColorInput(hex) {
+    if (!hex || typeof hex !== 'string') return DEFAULT_SERIES_COLORS[0];
+    let h = hex.trim();
+    if (!h.startsWith('#')) h = `#${h}`;
+    if (/^#[0-9A-Fa-f]{6}$/.test(h)) return h;
+    if (/^#[0-9A-Fa-f]{3}$/.test(h)) {
+        const r = h[1];
+        const g = h[2];
+        const b = h[3];
+        return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    return DEFAULT_SERIES_COLORS[0];
+}
+
+function resolveColumnDisplayLabel(columns, idx) {
+    const cols = Array.isArray(columns) ? columns : [];
+    const colName = cols[idx];
+    if (colName === undefined) return '';
+    const previewInp = $(`#rangePreview .preview-col-header[data-col-index="${idx}"]`);
+    if (previewInp.length) {
+        const v = previewInp.val().trim();
+        return v || String(colName);
+    }
+    if (pendingColumnLabels.length === cols.length && pendingColumnLabels[idx] !== undefined) {
+        const v = String(pendingColumnLabels[idx]).trim();
+        return v || String(colName);
+    }
+    return String(colName);
+}
+
+function getSeriesStyleSlotCount() {
+    const ct = $('#chartTypeInput').val();
+    if (ct === 'dumbbellchart') return 2;
+    if (ct === 'piechart') {
+        const n = getPieStyleSliceCount();
+        return n > 0 ? n : 1;
+    }
+    const cols = columnContext.columns || [];
+    /* Two columns + counts = joint combo chart → single trace "count". Three or more + counts = one trace per column after the first. */
+    if ($('#countsModeCheckbox').is(':checked') && cols.length === 2) {
+        return 1;
+    }
+    if (cols.length <= 1) return 1;
+    if (cols.length === 2) return 1;
+    return cols.length - 1;
+}
+
+function getSeriesStyleLabels() {
+    const ct = $('#chartTypeInput').val();
+    if (ct === 'dumbbellchart') return ['Low endpoints', 'High endpoints'];
+    if (ct === 'piechart') {
+        const n = getSeriesStyleSlotCount();
+        const ps = columnContext.pie_style;
+        const labels = ps && Array.isArray(ps.slice_labels) ? ps.slice_labels : [];
+        const out = [];
+        for (let i = 0; i < n; i++) {
+            if (labels[i] !== undefined && String(labels[i]).trim() !== '') {
+                out.push(String(labels[i]));
+            } else {
+                out.push(`Slice ${i + 1}`);
+            }
+        }
+        return out;
+    }
+    const cols = columnContext.columns || [];
+    if ($('#countsModeCheckbox').is(':checked') && cols.length === 2) {
+        return ['Counts'];
+    }
+    if (cols.length <= 1) return ['Series'];
+    if (cols.length === 2) return [`Series (${resolveColumnDisplayLabel(cols, 1)})`];
+    return cols.slice(1).map((_, j) => resolveColumnDisplayLabel(cols, j + 1));
+}
+
+function seriesUsesLineWidthDashUi() {
+    const ct = $('#chartTypeInput').val();
+    return ct === 'linechart' || ct === 'dumbbellchart';
+}
+
+function fitSeriesInitial(prevArr, n, palette) {
+    const prev = Array.isArray(prevArr) ? prevArr : [];
+    const pal = palette || DEFAULT_SERIES_COLORS;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        const p = prev[i];
+        if (p && typeof p === 'object') {
+            const dash = p.line_dash != null ? String(p.line_dash) : 'solid';
+            out.push({
+                color: p.color || pal[i % pal.length],
+                line_width: p.line_width,
+                line_dash: dash
+            });
+        } else {
+            out.push({ color: pal[i % pal.length], line_dash: 'solid' });
+        }
+    }
+    return out;
+}
+
+function inputValTrimmed($ctx, selector) {
+    const v = $ctx.find(selector).val();
+    return String(v == null ? '' : v).trim();
+}
+
+function captureSeriesStyleFromDom() {
+    const arr = [];
+    const lineUi = seriesUsesLineWidthDashUi();
+    $('#seriesStyleRows .series-style-row').each(function () {
+        const $row = $(this);
+        const row = { color: $row.find('.series-color').val() };
+        if (lineUi) {
+            const widthRaw = inputValTrimmed($row, '.series-line-width');
+            if (widthRaw !== '') {
+                const num = Number(widthRaw);
+                if (!Number.isNaN(num) && num > 0) row.line_width = num;
+            }
+            row.line_dash = $row.find('.series-line-dash').val() || 'solid';
+        }
+        arr.push(row);
+    });
+    return arr;
+}
+
+function buildSeriesFromStyle(styleObj) {
+    const n = getSeriesStyleSlotCount();
+    const series = Array.isArray(styleObj.series) ? styleObj.series : [];
+    const legacy = Array.isArray(styleObj.colors) ? styleObj.colors : [];
+    const merged = [];
+    for (let i = 0; i < n; i++) {
+        const base = { ...(series[i] || {}) };
+        if (!base.color && legacy[i]) base.color = legacy[i];
+        merged.push(base);
+    }
+    return fitSeriesInitial(merged, n, DEFAULT_SERIES_COLORS);
+}
+
+function refreshSeriesStyleRows(opts = {}) {
+    const container = $('#seriesStyleRows');
+    if (!container.length) return;
+
+    let initial = opts.initialSeries;
+    const n = getSeriesStyleSlotCount();
+    const labels = getSeriesStyleLabels();
+    const palette = DEFAULT_SERIES_COLORS;
+
+    if (!initial || !Array.isArray(initial)) {
+        initial = fitSeriesInitial([], n, palette);
+    } else {
+        initial = fitSeriesInitial(initial, n, palette);
+    }
+
+    container.empty();
+
+    if (n <= 0) {
+        container.append(
+            $('<div>').addClass('section-note').text('Select chart type and columns to style each series.')
+        );
+        return;
+    }
+
+    const lineUi = seriesUsesLineWidthDashUi();
+    const chartType = $('#chartTypeInput').val() || '';
+    let hint = '';
+    if (chartType === 'piechart') {
+        hint = 'Each row sets the color for one pie slice (same order as categories in your data).';
+    } else if ((columnContext.columns || []).length >= 3) {
+        hint = 'Each row matches one Y-series (columns after the first are separate lines/bars).';
+    } else {
+        hint = 'Single-series chart; one row applies to the plotted trace.';
+    }
+    if (!lineUi) {
+        hint += ' Line width and dash apply only to line charts (and dumbbell).';
+    }
+    container.append($('<div>').addClass('section-note').css({ marginBottom: '8px' }).text(hint));
+
+    for (let i = 0; i < n; i++) {
+        const cfg = initial[i] || { color: palette[i % palette.length], line_dash: 'solid' };
+        const row = $('<div>').addClass('series-style-row');
+        row.append($('<span class="series-style-label">').text(labels[i] || `Series ${i + 1}`));
+        row.append(
+            $('<label class="series-style-field">')
+                .append($('<span>').text('Color'))
+                .append(
+                    $('<input type="color">')
+                        .addClass('series-color')
+                        .val(normalizeHexColorInput(cfg.color))
+                )
+        );
+
+        if (lineUi) {
+            row.append(
+                $('<label class="series-style-field">')
+                    .append($('<span>').text('Line width'))
+                    .append(
+                        $('<input type="number">')
+                            .addClass('series-line-width')
+                            .attr({ min: '1', max: '12', step: '0.5', placeholder: 'default' })
+                            .css({ width: '5rem' })
+                            .val(cfg.line_width != null && cfg.line_width !== '' ? String(cfg.line_width) : '')
+                    )
+            );
+            const dashSelect = $('<select>').addClass('series-line-dash');
+            dashSelect.append(
+                $('<option value="solid">').text('Solid'),
+                $('<option value="dash">').text('Dashed'),
+                $('<option value="dot">').text('Dotted'),
+                $('<option value="dashdot">').text('Dash-dot')
+            );
+            dashSelect.val(cfg.line_dash || 'solid');
+            row.append($('<label class="series-style-field">').append($('<span>').text('Line')).append(dashSelect));
+        }
+
+        container.append(row);
+    }
+}
+
+function collectPlotStyle() {
+    const style = {};
+    if (!$('#plotTitleVisible').is(':checked')) {
+        style.title_visible = false;
+    }
+    const legendVisible = $('#plotLegendVisible').is(':checked');
+    const legendPosition = $('#plotLegendPosition').val() || 'default';
+    style.legend = {
+        visible: legendVisible,
+        position: legendVisible ? legendPosition : 'default'
+    };
+    if ($('#plotMarkersRow').is(':visible') && $('#plotMarkersVisible').is(':checked')) {
+        style.markers_visible = true;
+    }
+
+    const lineUi = seriesUsesLineWidthDashUi();
+    const series = [];
+    $('#seriesStyleRows .series-style-row').each(function () {
+        const $row = $(this);
+        const entry = {
+            color: $row.find('.series-color').val()
+        };
+        if (lineUi) {
+            const widthRaw = inputValTrimmed($row, '.series-line-width');
+            if (widthRaw !== '') {
+                const w = Number(widthRaw);
+                if (!Number.isNaN(w) && w > 0) entry.line_width = w;
+            }
+            const dash = $row.find('.series-line-dash').val() || 'solid';
+            if (dash !== 'solid') entry.line_dash = dash;
+        }
+        series.push(entry);
+    });
+    if (series.length) style.series = series;
+
+    return style;
+}
+
+function syncPlotStyleForm(style) {
+    const s = style && typeof style === 'object' ? style : {};
+    $('#plotTitleVisible').prop('checked', s.title_visible !== false);
+    const leg = s.legend || {};
+    $('#plotLegendVisible').prop('checked', leg.visible !== false);
+    $('#plotLegendPosition').val(leg.position || 'default');
+    $('#plotMarkersVisible').prop('checked', s.markers_visible === true);
+    syncPlotStyleFieldVisibility();
+    refreshSeriesStyleRows({ initialSeries: buildSeriesFromStyle(s) });
+}
+
+function syncPlotStyleFieldVisibility() {
+    const chartType = $('#chartTypeInput').val() || '';
+    const markerFriendly = chartType === 'linechart' || chartType === 'dumbbellchart';
+    $('#plotMarkersRow').toggle(markerFriendly);
+}
+
+function collectColumnLabelsForChart(columns) {
+    const cols = Array.isArray(columns) ? columns : [];
+    const defaults = cols.map((c) => String(c));
+    const merged = cols.map((_, idx) => resolveColumnDisplayLabel(cols, idx));
+    const sameAsDefault = merged.every((lbl, i) => lbl === defaults[i]);
+    return sameAsDefault ? [] : merged;
+}
+
 async function resolveColumnsForChart(source, rangeValue, updatePreview) {
     if (source.file_type !== 'xlsx') {
         const cols = Array.isArray(source.columns) ? source.columns : [];
-        setColumnContext(source.source_id, null, cols);
+        setColumnContext(source.source_id, null, cols, null);
+        updateChartActionAvailability();
         return cols;
     }
 
@@ -306,7 +615,12 @@ async function resolveColumnsForChart(source, rangeValue, updatePreview) {
     const response = await fetch('/preview-range', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_id: source.source_id, range: rangeValue })
+        body: JSON.stringify({
+            source_id: source.source_id,
+            range: rangeValue,
+            max_rows: 500,
+            max_cols: 50
+        })
     });
     const result = await response.json();
     if (!response.ok || !result.success) {
@@ -314,14 +628,22 @@ async function resolveColumnsForChart(source, rangeValue, updatePreview) {
     }
 
     const cols = Array.isArray(result.excel_columns) ? result.excel_columns : [];
-    setColumnContext(source.source_id, rangeValue, cols);
+    setColumnContext(source.source_id, rangeValue, cols, result.pie_style || null);
 
     if (updatePreview) {
-        const info = result.range_info;
-        $('#rangeInfo').text(`Range ${info.display} -> ${info.total_rows} rows x ${info.total_cols} columns`);
-        renderRangePreview(result.preview, cols);
+        const info = result.range_info || {};
+        let msg = `Range ${info.display || rangeValue} → ${info.total_rows} rows × ${info.total_cols} columns`;
+        const tr = result.truncation;
+        if (tr && (tr.rows_truncated || tr.cols_truncated)) {
+            msg += `. Preview grid ${tr.preview_rows}×${tr.preview_cols}`;
+            if (tr.rows_truncated) msg += '; rows truncated';
+            if (tr.cols_truncated) msg += '; columns truncated';
+        }
+        $('#rangeInfo').text(msg);
+        renderRangePreview(result.preview, cols, tr);
     }
 
+    updateChartActionAvailability();
     return cols;
 }
 
@@ -556,7 +878,9 @@ async function generatePlotRequest() {
     try {
         const columns = await resolveColumnsForChart(source, rangeValue, false);
         formData.append('columns', JSON.stringify(columns));
-        formData.append('column_labels', JSON.stringify(collectCustomColumnLabels(columns)));
+        formData.append('column_labels', JSON.stringify(collectColumnLabelsForChart(columns)));
+        formData.append('plot_style', JSON.stringify(collectPlotStyle()));
+        formData.append('counts_mode', $('#countsModeCheckbox').is(':checked') ? '1' : '0');
 
         const response = await fetch('/generate', {
             method: 'POST',
@@ -600,7 +924,9 @@ async function addChartPreset() {
     try {
         const columns = await resolveColumnsForChart(source, rangeValue, false);
         formData.append('columns', JSON.stringify(columns));
-        formData.append('column_labels', JSON.stringify(collectCustomColumnLabels(columns)));
+        formData.append('column_labels', JSON.stringify(collectColumnLabelsForChart(columns)));
+        formData.append('plot_style', JSON.stringify(collectPlotStyle()));
+        formData.append('counts_mode', $('#countsModeCheckbox').is(':checked') ? '1' : '0');
 
         const response = await fetch('/new_chart', {
             method: 'POST',
@@ -654,7 +980,9 @@ async function updateSelectedChartPreset() {
     try {
         const columns = await resolveColumnsForChart(source, rangeValue, false);
         formData.append('columns', JSON.stringify(columns));
-        formData.append('column_labels', JSON.stringify(collectCustomColumnLabels(columns)));
+        formData.append('column_labels', JSON.stringify(collectColumnLabelsForChart(columns)));
+        formData.append('plot_style', JSON.stringify(collectPlotStyle()));
+        formData.append('counts_mode', $('#countsModeCheckbox').is(':checked') ? '1' : '0');
 
         const response = await fetch('/new_chart', {
             method: 'POST',
@@ -822,8 +1150,10 @@ function loadSelectedChartPresetIntoForm() {
     if (chart.range) {
         $('#excelRangeInput').val(chart.range);
     }
-    setColumnContext(chart.source_id || null, chart.range || null, chart.columns || []);
-    setCustomColumnLabels(chart.column_labels || []);
+    setColumnContext(chart.source_id || null, chart.range || null, chart.columns || [], null);
+    applyLoadedColumnLabels(chart.column_labels || []);
+    $('#countsModeCheckbox').prop('checked', !!chart.counts_mode);
+    syncPlotStyleForm(chart.plot_style || {});
     updateChartActionAvailability();
 }
 
@@ -839,15 +1169,15 @@ async function saveTemplate() {
         });
         const result = await response.json();
         if (!response.ok || !result.success) {
-            throw new Error(result.error || 'Template save failed');
+            throw new Error(result.error || 'Configuration save failed');
         }
 
-        $('#templateInfo').text(`Saved template '${result.template_name}' at ${result.saved_at}`);
+        $('#templateInfo').text(`Saved configuration '${result.template_name}' at ${result.saved_at}`);
         $('#templateNameInput').val(result.template_name);
         await refreshTemplateList(result.template_name);
     } catch (error) {
-        console.error('Template save error:', error);
-        $('#templateInfo').text(`Template save failed: ${error.message}`);
+        console.error('Configuration save error:', error);
+        $('#templateInfo').text(`Configuration save failed: ${error.message}`);
     }
 }
 
@@ -856,13 +1186,13 @@ async function refreshTemplateList(selectedTemplate = null) {
         const response = await fetch('/templates');
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Unable to list templates');
+            throw new Error(result.error || 'Unable to list saved configurations');
         }
 
         const selector = $('#templateList');
         selector.empty();
         if (!result.templates || result.templates.length === 0) {
-            selector.append($('<option>').val('').text('No templates'));
+            selector.append($('<option>').val('').text('No saved configurations'));
             return;
         }
 
@@ -874,15 +1204,15 @@ async function refreshTemplateList(selectedTemplate = null) {
             selector.val(selectedTemplate);
         }
     } catch (error) {
-        console.error('Template list error:', error);
-        $('#templateInfo').text(`Template list error: ${error.message}`);
+        console.error('Configuration list error:', error);
+        $('#templateInfo').text(`Configuration list error: ${error.message}`);
     }
 }
 
 async function loadTemplate() {
     const templateName = $('#templateList').val();
     if (!templateName) {
-        $('#templateInfo').text('Select a template first.');
+        $('#templateInfo').text('Select a saved configuration first.');
         return;
     }
 
@@ -890,7 +1220,7 @@ async function loadTemplate() {
         const response = await fetch(`/load_template?template_name=${encodeURIComponent(templateName)}`);
         const result = await response.json();
         if (!response.ok || !result.success) {
-            throw new Error(result.error || 'Template load failed');
+            throw new Error(result.error || 'Configuration load failed');
         }
 
         $('#templateNameInput').val(result.template_name || templateName);
@@ -962,18 +1292,20 @@ async function loadTemplate() {
             if (activeChart.range) {
                 $('#excelRangeInput').val(activeChart.range);
             }
-            setColumnContext(activeChart.source_id || null, activeChart.range || null, activeChart.columns || []);
-            setCustomColumnLabels(activeChart.column_labels || []);
+            setColumnContext(activeChart.source_id || null, activeChart.range || null, activeChart.columns || [], null);
+            applyLoadedColumnLabels(activeChart.column_labels || []);
+            $('#countsModeCheckbox').prop('checked', !!activeChart.counts_mode);
+            syncPlotStyleForm(activeChart.plot_style || {});
         }
 
         const warningText = warnings.length ? ` Warnings: ${warnings.join('; ')}` : '';
         const restoreText = ` Restored sources: ${restoredSourceIds.size}/${sources.length}.`;
         const blockedText = blockedCharts.length ? ` Blocked charts (missing sources): ${blockedCharts.length}.` : '';
-        $('#templateInfo').text(`Loaded template '${result.template_name}'.${restoreText}${blockedText}${warningText}`);
+        $('#templateInfo').text(`Loaded configuration '${result.template_name}'.${restoreText}${blockedText}${warningText}`);
         updateChartActionAvailability();
     } catch (error) {
-        console.error('Template load error:', error);
-        $('#templateInfo').text(`Template load failed: ${error.message}`);
+        console.error('Configuration load error:', error);
+        $('#templateInfo').text(`Configuration load failed: ${error.message}`);
         updateChartActionAvailability();
     }
 }
@@ -985,7 +1317,7 @@ async function resetWorkspace() {
 
         sourceState = { active_source_id: null, sources: [] };
         chartState = { active_chart_id: null, charts: [] };
-        setColumnContext(null, null, []);
+        setColumnContext(null, null, [], null);
         lastLoadedSourcePath = '';
 
         isSyncingSourcePathInput = true;
@@ -994,8 +1326,9 @@ async function resetWorkspace() {
         $('#excelRangeInput').val('');
         $('#plotTitleInput').val('');
         $('#chartKeyInput').val('');
-        $('#useCustomColumnLabels').prop('checked', false);
-        refreshColumnLabelEditor();
+        pendingColumnLabels = [];
+        $('#countsModeCheckbox').prop('checked', false);
+        syncPlotStyleForm({});
 
         $('#templateNameInput').val('');
         $('#docxTemplateInput').val('');
@@ -1013,7 +1346,7 @@ async function resetWorkspace() {
         await refreshTemplateList();
 
         setSourceStatus('Workspace reset. Load a source to start charting.');
-        $('#templateInfo').text('Workspace reset. Saved templates are unchanged.');
+        $('#templateInfo').text('Workspace reset. Saved report configurations on disk are unchanged.');
         updateChartActionAvailability();
     } catch (error) {
         console.error('Workspace reset error:', error);
@@ -1021,7 +1354,7 @@ async function resetWorkspace() {
     }
 }
 
-function renderRangePreview(preview, excelColumns) {
+function renderRangePreview(preview, excelColumns, truncation) {
     let previewContainer = $('#rangePreview');
     if (previewContainer.length === 0) {
         previewContainer = $('<div id="rangePreview" class="range-preview-table"></div>');
@@ -1034,16 +1367,43 @@ function renderRangePreview(preview, excelColumns) {
         return;
     }
 
-    const table = $('<table border="1" style="border-collapse: collapse; font-size: 0.85em;">');
-    const header = $('<tr>');
-    excelColumns.forEach((col) => {
-        header.append($('<th>').text(col).css('padding', '4px'));
+    const fullCols = Array.isArray(excelColumns) ? excelColumns : [];
+    let headerKeys;
+    if (truncation && fullCols.length && typeof truncation.preview_cols === 'number') {
+        headerKeys = fullCols.slice(0, Math.min(truncation.preview_cols, fullCols.length));
+    } else if (preview.length) {
+        headerKeys = Object.keys(preview[0]);
+    } else {
+        headerKeys = fullCols;
+    }
+
+    const chart = getActiveChartPreset();
+    const chartHints = chart && Array.isArray(chart.column_labels) ? chart.column_labels : [];
+
+    const table = $('<table border="1">');
+    const headerRow = $('<tr>');
+    headerKeys.forEach((colKey, idx) => {
+        let displayVal = String(colKey);
+        if (pendingColumnLabels.length === fullCols.length && pendingColumnLabels[idx] !== undefined) {
+            const p = String(pendingColumnLabels[idx]).trim();
+            if (p) displayVal = p;
+        } else if (chartHints[idx] !== undefined && String(chartHints[idx]).trim() !== '') {
+            displayVal = String(chartHints[idx]);
+        }
+        const th = $('<th>').css({ padding: '2px', verticalAlign: 'bottom' });
+        const input = $('<input type="text">')
+            .addClass('preview-col-header')
+            .attr('data-col-index', String(idx))
+            .attr('aria-label', `Column ${idx + 1} label`)
+            .val(displayVal);
+        th.append(input);
+        headerRow.append(th);
     });
-    table.append(header);
+    table.append(headerRow);
 
     preview.forEach((row) => {
         const tr = $('<tr>');
-        excelColumns.forEach((col) => {
+        headerKeys.forEach((col) => {
             const value = row[col] == null ? '' : String(row[col]);
             tr.append($('<td>').text(value).css('padding', '4px').attr('title', value));
         });
