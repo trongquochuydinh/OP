@@ -7,6 +7,7 @@ from datetime import datetime
 import plotly.io as pio
 from . import plots_bp
 from blueprints.plots.builder import build_chart
+from blueprints.plots.plot_style import apply_plot_style
 import blueprints.data_processing.routes as data_routes
 
 CHART_STATE = {
@@ -41,6 +42,29 @@ def _derive_chart_key(chart_config, index=1, used_keys=None):
     return candidate
 
 
+def _parse_plot_style(raw):
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _parse_counts_mode(raw):
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
 def _validate_chart_key_uniqueness(chart_id, chart_key):
     for chart in CHART_STATE.get("charts", []):
         if chart.get("id") == chart_id:
@@ -55,6 +79,7 @@ def _render_chart_config(df, chart_config):
         df,
         chart_config["columns"],
         chart_config.get("title", ""),
+        counts_mode=chart_config.get("counts_mode", False),
     )
     return traces, layout
 
@@ -103,6 +128,8 @@ def _render_from_source(chart_config):
         df_for_chart.columns = sanitized_labels
         plot_columns = sanitized_labels
 
+    plot_style = _parse_plot_style(chart_config.get("plot_style"))
+
     chart_payload = {
         "id": chart_config.get("id"),
         "chart_key": chart_config.get("chart_key"),
@@ -112,6 +139,8 @@ def _render_from_source(chart_config):
         "columns": columns,
         "column_labels": column_labels,
         "title": chart_config.get("title", ""),
+        "plot_style": plot_style,
+        "counts_mode": bool(chart_config.get("counts_mode")),
     }
     render_payload = {
         "chart_type": chart_payload["chart_type"],
@@ -119,6 +148,7 @@ def _render_from_source(chart_config):
         "title": chart_payload["title"],
     }
     traces, layout = _render_chart_config(df_for_chart, render_payload)
+    traces, layout = apply_plot_style(traces, layout, plot_style, chart_payload["chart_type"])
     return chart_payload, traces, layout
 
 
@@ -161,6 +191,8 @@ def generate():
     chart_key = request.form.get("chart_key", "").strip()
     columns = json.loads(request.form.get("columns", "[]"))
     column_labels = json.loads(request.form.get("column_labels", "[]"))
+    plot_style = _parse_plot_style(request.form.get("plot_style"))
+    counts_mode = _parse_counts_mode(request.form.get("counts_mode"))
 
     try:
         payload = {
@@ -172,6 +204,8 @@ def generate():
             "columns": columns,
             "column_labels": column_labels,
             "title": title,
+            "plot_style": plot_style,
+            "counts_mode": counts_mode,
         }
         chart_config, traces, layout = _render_from_source(payload)
 
@@ -193,6 +227,8 @@ def new_chart():
     chart_key = request.form.get("chart_key", "").strip()
     columns = json.loads(request.form.get("columns", "[]"))
     column_labels = json.loads(request.form.get("column_labels", "[]"))
+    plot_style = _parse_plot_style(request.form.get("plot_style"))
+    counts_mode = _parse_counts_mode(request.form.get("counts_mode"))
 
     if not chart_type:
         return jsonify({"error": "chart_type is required"}), 400
@@ -209,6 +245,8 @@ def new_chart():
         "columns": columns,
         "column_labels": column_labels,
         "title": title,
+        "plot_style": plot_style,
+        "counts_mode": counts_mode,
     }
 
     try:
@@ -289,7 +327,7 @@ def render_charts():
         if source_id not in known_sources:
             chart_payload["traces"] = []
             chart_payload["layout"] = {}
-            chart_payload["error"] = f"Source unavailable for chart: {source_id}. Reload template sources first."
+            chart_payload["error"] = f"Source unavailable for chart: {source_id}. Reload sources from disk or load your saved configuration again."
             rendered_charts.append(chart_payload)
             continue
 
@@ -337,6 +375,8 @@ def hydrate_charts():
                 "columns": chart.get("columns", []),
                 "column_labels": chart.get("column_labels", []),
                 "title": chart.get("title", ""),
+                "plot_style": _parse_plot_style(chart.get("plot_style")),
+                "counts_mode": bool(chart.get("counts_mode")),
             }
         )
 

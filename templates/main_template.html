@@ -91,8 +91,22 @@
         .range-preview-table {
             margin-top: 10px;
             border: 1px solid #ddd;
-            max-height: 200px;
+            max-height: min(70vh, 520px);
             overflow: auto;
+        }
+
+        .range-preview-table table {
+            border-collapse: collapse;
+            font-size: 0.85em;
+        }
+
+        .preview-col-header {
+            min-width: 72px;
+            max-width: 220px;
+            width: 120px;
+            padding: 4px 6px;
+            font-size: 0.95em;
+            box-sizing: border-box;
         }
 
         .workflow-section {
@@ -119,6 +133,36 @@
             gap: 10px;
             align-items: center;
             flex-wrap: wrap;
+        }
+
+        .series-style-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .series-style-label {
+            min-width: 160px;
+            font-size: 0.9em;
+            font-weight: normal;
+        }
+
+        .series-style-field {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: normal;
+            font-size: 0.88em;
+        }
+
+        .series-style-field input[type="color"] {
+            width: 44px;
+            height: 28px;
+            padding: 0;
+            border: 1px solid #ccc;
+            cursor: pointer;
         }
     </style>
 </head>
@@ -158,8 +202,9 @@
             </div>
             <div id="rangeInfo" class="section-note"></div>
             <div style="font-size: 0.85em; color: #888; margin-top: 5px;">
-                <strong>Plotting logic:</strong> 1 column = frequency chart, 2 columns = X vs Y, 3+ columns = multi-series mode<br>
-                <strong>Range formats:</strong> A2:C10 (data subset), A (column), A:C (columns range), B,D (non-neighboring full columns)
+                <strong>Plotting logic:</strong> 1 column = frequency chart; 2 columns = first is X, second is Y (unless &quot;Count row occurrences&quot; is checked — then one bar per distinct pair); 3+ columns = first is shared category and the rest are separate series (with counts checked: non-null counts per category per series). <strong>Dumbbell chart:</strong> use 2 columns for category + low value only, or 3 columns for category, low, and high (extra columns are ignored).<br>
+                <strong>Range formats:</strong> A2:C10 (data subset), A (column), A:C (columns range), B,D (non-neighboring full columns)<br>
+                <strong>Column names:</strong> Edit labels in the preview table header row after &quot;Preview Range&quot;.
             </div>
         </div>
     </div>
@@ -174,17 +219,47 @@
                 {% endfor %}
             </select>
 
+            <div style="margin-top: 10px;">
+                <label for="countsModeCheckbox" style="font-weight: normal;">
+                    <input type="checkbox" id="countsModeCheckbox" disabled> Count row occurrences (2 columns: joint counts; 3+: counts per series vs first column; needs 2+ columns)
+                </label>
+            </div>
+
             <label style="margin-top: 10px;">Title</label>
             <input id="plotTitleInput" type="text" placeholder="Plot title">
 
             <label style="margin-top: 8px;">Chart key (for DOCX placeholders)</label>
             <input id="chartKeyInput" type="text" placeholder="e.g. retention_overview">
 
-            <div id="columnLabelControls" style="margin-top: 10px;">
-                <label for="useCustomColumnLabels" style="font-weight: normal;">
-                    <input type="checkbox" id="useCustomColumnLabels"> Use custom column labels
+            <div id="plotStyleControls" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #ddd;">
+                <strong style="display: block; margin-bottom: 8px;">Chart appearance</strong>
+                <label style="font-weight: normal;">
+                    <input type="checkbox" id="plotTitleVisible" checked> Show chart title
                 </label>
-                <div id="columnLabelEditor" style="display: none; margin-top: 8px;"></div>
+                <div style="margin-top: 8px;">
+                    <label style="font-weight: normal;">
+                        <input type="checkbox" id="plotLegendVisible" checked> Show legend
+                    </label>
+                    <label for="plotLegendPosition" style="font-weight: normal; margin-left: 12px;">Legend position</label>
+                    <select id="plotLegendPosition">
+                        <option value="default">Default</option>
+                        <option value="bottom">Bottom</option>
+                        <option value="top">Top</option>
+                        <option value="left">Left</option>
+                        <option value="right">Right</option>
+                        <option value="inside_bottom_right">Inside bottom-right</option>
+                    </select>
+                </div>
+                <div id="plotMarkersRow" style="margin-top: 8px;">
+                    <label style="font-weight: normal;">
+                        <input type="checkbox" id="plotMarkersVisible"> Show point markers (line / dumbbell charts)
+                    </label>
+                </div>
+                <div style="margin-top: 12px;">
+                    <strong style="display: block; margin-bottom: 6px;">Series styling</strong>
+                    <div id="seriesStyleRows"></div>
+                    <div class="section-note">Uses resolved columns: multiple lines/bars appear when you select <strong>three or more</strong> columns (first = shared X/category). Line width and dash apply to line charts (and dumbbell endpoints).</div>
+                </div>
             </div>
         </div>
 
@@ -193,7 +268,7 @@
                 Generate plot
             </button>
             <button type="button" id="addChartBtn">
-                Save chart to template
+                Save chart preset
             </button>
             <button type="button" id="updateChartBtn">
                 Update selected preset
@@ -217,21 +292,21 @@
     </div>
 
     <div class="workflow-section">
-        <h3>Step 3: Save Template and Generate Report</h3>
+        <h3>Step 3: Save Report Configuration and Generate Report</h3>
         <div id="templateControls" style="margin-bottom: 12px;">
-            <label for="templateNameInput">Template name</label>
+            <label for="templateNameInput">Configuration name</label>
             <div class="section-actions">
                 <input id="templateNameInput" type="text" placeholder="e.g. baseline_salary_view" style="flex: 1;">
-                <button type="button" id="saveTemplateBtn">Save Template</button>
+                <button type="button" id="saveTemplateBtn">Save configuration</button>
                 <select id="templateList" style="min-width: 220px;"></select>
-                <button type="button" id="loadTemplateBtn">Load Template</button>
+                <button type="button" id="loadTemplateBtn">Load configuration</button>
                 <button type="button" id="resetWorkspaceBtn">Reset Workspace</button>
             </div>
-            <div class="section-note">Reset Workspace clears the current session state only and keeps saved templates on disk.</div>
+            <div class="section-note">Reset Workspace clears the current session only; saved report configurations on disk are unchanged.</div>
             <div id="templateInfo" class="section-note"></div>
         </div>
 
-        <label style="display: block; margin-bottom: 6px;">Report generation (DOCX placeholder mode)</label>
+        <label style="display: block; margin-bottom: 6px;">Report generation (DOCX placeholders — Word file is still called a template)</label>
         <div class="section-actions">
             <input type="file" id="docxTemplateInput" accept=".docx">
             <input type="text" id="docxTemplatePathInput" placeholder="or path to template.docx" style="min-width: 320px;">
