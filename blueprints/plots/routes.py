@@ -80,6 +80,7 @@ def _render_chart_config(df, chart_config):
         chart_config["columns"],
         chart_config.get("title", ""),
         counts_mode=chart_config.get("counts_mode", False),
+        font_size=chart_config.get("font_size", 12),
     )
     return traces, layout
 
@@ -129,6 +130,10 @@ def _render_from_source(chart_config):
         plot_columns = sanitized_labels
 
     plot_style = _parse_plot_style(chart_config.get("plot_style"))
+    try:
+        font_size = int(chart_config.get("font_size", 12))
+    except (TypeError, ValueError):
+        font_size = 12
 
     chart_payload = {
         "id": chart_config.get("id"),
@@ -141,11 +146,14 @@ def _render_from_source(chart_config):
         "title": chart_config.get("title", ""),
         "plot_style": plot_style,
         "counts_mode": bool(chart_config.get("counts_mode")),
+        "font_size": font_size,
     }
     render_payload = {
         "chart_type": chart_payload["chart_type"],
         "columns": plot_columns,
         "title": chart_payload["title"],
+        "counts_mode": chart_payload["counts_mode"],
+        "font_size": font_size,
     }
     traces, layout = _render_chart_config(df_for_chart, render_payload)
     traces, layout = apply_plot_style(traces, layout, plot_style, chart_payload["chart_type"])
@@ -193,6 +201,10 @@ def generate():
     column_labels = json.loads(request.form.get("column_labels", "[]"))
     plot_style = _parse_plot_style(request.form.get("plot_style"))
     counts_mode = _parse_counts_mode(request.form.get("counts_mode"))
+    try:
+        font_size = int(request.form.get("font_size", 12))
+    except (TypeError, ValueError):
+        font_size = 12
 
     try:
         payload = {
@@ -206,6 +218,7 @@ def generate():
             "title": title,
             "plot_style": plot_style,
             "counts_mode": counts_mode,
+            "font_size": font_size,
         }
         chart_config, traces, layout = _render_from_source(payload)
 
@@ -229,6 +242,10 @@ def new_chart():
     column_labels = json.loads(request.form.get("column_labels", "[]"))
     plot_style = _parse_plot_style(request.form.get("plot_style"))
     counts_mode = _parse_counts_mode(request.form.get("counts_mode"))
+    try:
+        font_size = int(request.form.get("font_size", 12))
+    except (TypeError, ValueError):
+        font_size = 12
 
     if not chart_type:
         return jsonify({"error": "chart_type is required"}), 400
@@ -247,6 +264,7 @@ def new_chart():
         "title": title,
         "plot_style": plot_style,
         "counts_mode": counts_mode,
+        "font_size": font_size,
     }
 
     try:
@@ -365,6 +383,10 @@ def hydrate_charts():
         if not chart.get("source_id"):
             continue
         chart_key = _derive_chart_key(chart, len(valid_charts) + 1, used_keys)
+        try:
+            hydrate_font_size = int(chart.get("font_size", 12))
+        except (TypeError, ValueError):
+            hydrate_font_size = 12
         valid_charts.append(
             {
                 "id": chart.get("id") or str(uuid.uuid4()),
@@ -377,6 +399,7 @@ def hydrate_charts():
                 "title": chart.get("title", ""),
                 "plot_style": _parse_plot_style(chart.get("plot_style")),
                 "counts_mode": bool(chart.get("counts_mode")),
+                "font_size": int(chart.get("font_size") or 12),
             }
         )
 

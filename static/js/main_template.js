@@ -864,6 +864,7 @@ async function generatePlotRequest() {
     formData.append('chart_type', $('#chartTypeInput').val());
     formData.append('title', $('#plotTitleInput').val());
     formData.append('chart_key', normalizeChartKey($('#chartKeyInput').val()) || deriveChartKeyFallback());
+    formData.append('font_size', $('#chartFontSizeInput').val() || '12');
 
     let rangeValue = null;
     if (source.file_type === 'xlsx') {
@@ -890,6 +891,7 @@ async function generatePlotRequest() {
         if (!response.ok) {
             throw new Error(result.error || 'Plot generation failed');
         }
+        $('#plot').show();
         Plotly.newPlot('plot', result.traces, result.layout || {});
     } catch (error) {
         console.error('Generate plot error:', error);
@@ -910,6 +912,7 @@ async function addChartPreset() {
     formData.append('chart_type', $('#chartTypeInput').val());
     formData.append('title', $('#plotTitleInput').val());
     formData.append('chart_key', normalizedKey);
+    formData.append('font_size', $('#chartFontSizeInput').val() || '12');
 
     let rangeValue = null;
     if (source.file_type === 'xlsx') {
@@ -965,6 +968,7 @@ async function updateSelectedChartPreset() {
     formData.append('chart_type', $('#chartTypeInput').val());
     formData.append('title', $('#plotTitleInput').val());
     formData.append('chart_key', normalizedKey);
+    formData.append('font_size', $('#chartFontSizeInput').val() || '12');
 
     let rangeValue = null;
 
@@ -1142,6 +1146,7 @@ function loadSelectedChartPresetIntoForm() {
     if (chart.chart_type) $('#chartTypeInput').val(chart.chart_type);
     $('#plotTitleInput').val(chart.title || '');
     $('#chartKeyInput').val(chart.chart_key || '');
+    $('#chartFontSizeInput').val(chart.font_size || 12);
     if (chart.source_id) {
         sourceState.active_source_id = chart.source_id;
         $('#sourceSelect').val(chart.source_id);
@@ -1276,6 +1281,8 @@ async function loadTemplate() {
         chartState = hydrateResult.chart_state || { active_chart_id: null, charts: [] };
         await refreshChartPresetList();
         await renderSavedCharts();
+        Plotly.purge('plot');
+        $('#plot').hide();
 
         const blockedCharts = (chartState.charts || []).filter((chart) => !restoredSourceIds.has(chart.source_id));
 
@@ -1284,6 +1291,7 @@ async function loadTemplate() {
             $('#chartTypeInput').val(activeChart.chart_type);
             $('#plotTitleInput').val(activeChart.title || '');
             $('#chartKeyInput').val(activeChart.chart_key || '');
+            $('#chartFontSizeInput').val(activeChart.font_size || 12);
             if (activeChart.source_id) {
                 sourceState.active_source_id = activeChart.source_id;
                 $('#sourceSelect').val(activeChart.source_id);
@@ -1340,6 +1348,7 @@ async function resetWorkspace() {
         $('#rangePreview').remove();
         $('#savedChartsContainer').empty();
         Plotly.purge('plot');
+        $('#plot').hide();
 
         await refreshSources();
         await refreshChartPresetList();

@@ -464,7 +464,7 @@ def _multi_series_melt_chart(df, columns, chart_type, title, *, counts_only=Fals
     return traces, layout
 
 
-def build_chart(chart_type, df, columns, title, counts_mode=False):
+def build_chart(chart_type, df, columns, title, counts_mode=False, font_size=12):
 
     if chart_type not in CHART_BUILDERS:
         raise ValueError(f"Unsupported chart type: {chart_type}")
@@ -472,12 +472,22 @@ def build_chart(chart_type, df, columns, title, counts_mode=False):
     if not columns:
         raise ValueError("No columns selected")
 
+    try:
+        font_size = int(font_size)
+    except (TypeError, ValueError):
+        font_size = 12
+
+    def _apply_font(traces_layout):
+        traces, layout = traces_layout
+        layout["font"] = {"size": font_size}
+        return traces, layout
+
     df = df.copy()
 
     df = df.where(pd.notnull(df), None)
 
     if chart_type == "dumbbellchart":
-        return _build_dumbbell_chart(df, columns, title, counts_mode)
+        return _apply_font(_build_dumbbell_chart(df, columns, title, counts_mode))
 
     # CASE 1: single column → grouping + count
     if len(columns) == 1:
@@ -489,12 +499,12 @@ def build_chart(chart_type, df, columns, title, counts_mode=False):
         grouped = df[col].value_counts().reset_index()
         grouped.columns = [col, "count"]
 
-        return CHART_BUILDERS[chart_type](
+        return _apply_font(CHART_BUILDERS[chart_type](
             grouped,
             x_col=col,
             y_col="count",
             title=title or f"Frequency of {col}"
-        )
+        ))
 
     # CASE 2: two columns → default X vs Y; optional counts across both columns
     elif len(columns) == 2:
@@ -504,17 +514,17 @@ def build_chart(chart_type, df, columns, title, counts_mode=False):
         df_clean = df[[x_col, y_col]].dropna(how="any")
 
         if counts_mode:
-            return _counts_combo_chart(df, columns, chart_type, title)
+            return _apply_font(_counts_combo_chart(df, columns, chart_type, title))
 
-        return CHART_BUILDERS[chart_type](
+        return _apply_font(CHART_BUILDERS[chart_type](
             df_clean,
             x_col=x_col,
             y_col=y_col,
             title=title or f"{y_col} vs {x_col}",
-        )
+        ))
 
     # CASE 3: multiple columns → melt wide → multi-series (counts_mode forces count pivot per column)
     else:
         if counts_mode:
-            return _multi_series_melt_chart(df, columns, chart_type, title, counts_only=True)
-        return _multi_series_melt_chart(df, columns, chart_type, title, counts_only=False)
+            return _apply_font(_multi_series_melt_chart(df, columns, chart_type, title, counts_only=True))
+        return _apply_font(_multi_series_melt_chart(df, columns, chart_type, title, counts_only=False))

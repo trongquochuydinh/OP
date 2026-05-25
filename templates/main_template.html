@@ -175,7 +175,7 @@
     <div class="workflow-section">
         <h3>Step 1: Select Data Source and Range</h3>
         <div>
-            <label>Select file(s) (.xlsx, .yml): </label>
+            <label>Select file(s) (.xlsx): </label>
             <button type="button" id="desktopSelectFilesBtn" class="desktop-only" style="display: none;">Desktop: Select Files</button>
         </div>
         <div style="margin-top: 8px;">
@@ -228,11 +228,15 @@
             <label style="margin-top: 10px;">Title</label>
             <input id="plotTitleInput" type="text" placeholder="Plot title">
 
-            <label style="margin-top: 8px;">Chart key (for DOCX placeholders)</label>
+            <label style="margin-top: 8px;">Chart key (unique preset ID &amp; DOCX placeholder)</label>
             <input id="chartKeyInput" type="text" placeholder="e.g. retention_overview">
 
             <div id="plotStyleControls" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #ddd;">
                 <strong style="display: block; margin-bottom: 8px;">Chart appearance</strong>
+                <div style="margin-bottom: 8px;">
+                    <label for="chartFontSizeInput" style="font-weight: normal;">Font size (labels &amp; axes):</label>
+                    <input id="chartFontSizeInput" type="number" value="12" min="6" max="48" style="width: 70px; margin-left: 6px;">
+                </div>
                 <label style="font-weight: normal;">
                     <input type="checkbox" id="plotTitleVisible" checked> Show chart title
                 </label>
@@ -264,6 +268,18 @@
         </div>
 
         <div class="section-actions" style="margin-top: 12px;">
+            <select id="chartPresetList" style="min-width: 240px;"></select>
+            <button type="button" id="moveChartUpBtn">
+                Move up
+            </button>
+            <button type="button" id="moveChartDownBtn">
+                Move down
+            </button>
+            <button type="button" id="removeChartBtn">
+                Remove preset
+            </button>
+        </div>
+        <div class="section-actions" style="margin-top: 10px;">
             <button class="generate-plot">
                 Generate plot
             </button>
@@ -275,18 +291,6 @@
             </button>
             <button type="button" id="renderChartsBtn">
                 Render saved charts
-            </button>
-        </div>
-        <div class="section-actions" style="margin-top: 10px;">
-            <select id="chartPresetList" style="min-width: 240px;"></select>
-            <button type="button" id="moveChartUpBtn">
-                Move up
-            </button>
-            <button type="button" id="moveChartDownBtn">
-                Move down
-            </button>
-            <button type="button" id="removeChartBtn">
-                Remove preset
             </button>
         </div>
     </div>
@@ -311,13 +315,13 @@
             <input type="file" id="docxTemplateInput" accept=".docx">
             <input type="text" id="docxTemplatePathInput" placeholder="or path to template.docx" style="min-width: 320px;">
             <button type="button" id="desktopBrowseDocxBtn" class="desktop-only" style="display: none;">Browse DOCX</button>
-            <input type="text" id="docxOutputNameInput" placeholder="optional output name" style="min-width: 220px;">
+            <input type="text" id="docxOutputNameInput" placeholder="output name or full path (optional)" style="min-width: 220px;">
             <button type="button" id="generateDocxBtn">Generate DOCX report</button>
         </div>
         <div id="docxReportInfo" class="section-note"></div>
     </div>
 
-    <div id="plot"></div>
+    <div id="plot" style="display: none;"></div>
     <div id="savedChartsContainer" style="margin-top: 24px;"></div>
 
 </div>

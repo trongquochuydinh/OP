@@ -6,6 +6,7 @@ from flask import (
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 import re
 import importlib
 from io import BytesIO
@@ -163,11 +164,30 @@ def generate_docx_report():
         return jsonify({"error": "Provide docx_template file or docx_template_path"}), 400
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    report_dir = REPORTS_DIR / timestamp
-    report_dir.mkdir(parents=True, exist_ok=True)
+    png_dir = REPORTS_DIR / timestamp
+    png_dir.mkdir(parents=True, exist_ok=True)
+
+    # Interpret output_name: full path (contains separator) vs plain name vs empty
+    is_path = output_name and (os.sep in output_name or '/' in output_name)
+    if is_path:
+        p = Path(output_name).expanduser().resolve()
+        if p.suffix.lower() == '.docx':
+            output_dest = p.parent
+            explicit_stem = p.stem
+        else:
+            output_dest = p
+            explicit_stem = None
+    else:
+        if docx_template_path:
+            output_dest = Path(docx_template_path).expanduser().resolve().parent
+        else:
+            output_dest = REPORTS_DIR / timestamp
+        explicit_stem = _slugify_template_name(output_name) if output_name else None
+
+    output_dest.mkdir(parents=True, exist_ok=True)
 
     try:
-        export_result = plot_routes.export_charts_to_pngs(output_root=report_dir / "charts")
+        export_result = plot_routes.export_charts_to_pngs(output_root=png_dir / "charts")
     except Exception as exc:
         return jsonify({"error": f"Chart export failed: {str(exc)}"}), 400
 
@@ -193,8 +213,8 @@ def generate_docx_report():
     exported_keys = set(image_map.keys())
     missing_placeholders = sorted(exported_keys - used_keys)
 
-    safe_output_name = _slugify_template_name(output_name) if output_name else f"{_slugify_template_name(template_stem)}_generated_{timestamp}"
-    output_path = report_dir / f"{safe_output_name}.docx"
+    safe_output_name = explicit_stem or f"{_slugify_template_name(template_stem)}_generated_{timestamp}"
+    output_path = output_dest / f"{safe_output_name}.docx"
 
     try:
         document.save(str(output_path))
@@ -205,7 +225,7 @@ def generate_docx_report():
         {
             "success": True,
             "output_docx_path": str(output_path),
-            "report_dir": str(report_dir),
+            "report_dir": str(png_dir),
             "replaced": replace_result["replaced"],
             "missing_images": replace_result["missing_images"],
             "missing_placeholders": missing_placeholders,
