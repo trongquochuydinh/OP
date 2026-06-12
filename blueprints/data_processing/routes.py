@@ -8,6 +8,7 @@ from blueprints.data_processing.normalizer import normalize_xlsx, normalize_pars
 from blueprints.data_processing.excel_utils import (
     apply_multiple_ranges_to_dataframe,
     apply_range_to_dataframe,
+    number_to_excel_column,
     parse_excel_range,
     parse_multiple_excel_ranges,
 )
@@ -173,10 +174,18 @@ def get_dataframe_for_chart(source_id, range_str=None):
 
     if "," in range_str:
         ranges = parse_multiple_excel_ranges(range_str)
-        subset_df, _ = apply_multiple_ranges_to_dataframe(source["raw_df"], ranges)
+        subset_df, excel_cols = apply_multiple_ranges_to_dataframe(source["raw_df"], ranges)
+        if excel_cols and len(subset_df.columns) == len(excel_cols):
+            subset_df.columns = excel_cols
     else:
         range_info = parse_excel_range(range_str)
         subset_df = apply_range_to_dataframe(source["raw_df"], range_info)
+        col_keys = [
+            number_to_excel_column(col_idx)
+            for col_idx in range(range_info["start_col"], range_info["end_col"] + 1)
+        ]
+        if col_keys and len(subset_df.columns) <= len(col_keys):
+            subset_df.columns = col_keys[: len(subset_df.columns)]
 
     return normalize_xlsx(subset_df)
 
@@ -331,6 +340,20 @@ def reset_sources():
     SOURCES.clear()
     ACTIVE_SOURCE_ID = None
     return jsonify({"success": True})
+
+
+@date_processing_bp.route("/sources/<source_id>", methods=["DELETE"])
+def delete_source(source_id):
+    global ACTIVE_SOURCE_ID
+
+    if source_id not in SOURCES:
+        return jsonify({"error": "Unknown source_id"}), 404
+
+    del SOURCES[source_id]
+    if ACTIVE_SOURCE_ID == source_id:
+        ACTIVE_SOURCE_ID = next(iter(SOURCES.keys()), None)
+
+    return jsonify({"success": True, "active_source_id": ACTIVE_SOURCE_ID})
 
 
 @date_processing_bp.route("/preview-range", methods=["POST"])

@@ -4,11 +4,14 @@
 
 In **Step 1: Select Data Source and Range**, load your data using one of these options:
 
-- Type the file path in **Source path** and press Enter (or tab away) to auto-load it.
-- In desktop mode, use **Desktop: Select Files** to open a native file picker.
+- **Web (local):** paste absolute paths to `.xlsx` files on the machine running the app, **one path per line**, then click **Load sources**.
+- **Desktop mode:** use **Desktop: Select Files** to open a native file picker (paths are loaded automatically).
+
+Paths must exist on the computer where Flask runs (not in the browser). Saved configurations store absolute paths and reload files from disk when you load a configuration later.
 
 After loading:
 
+- Review the **Loaded sources** list and remove any you no longer need.
 - Choose the correct item in **Active source**.
 - If the source is Excel, select a sheet in the **Sheet** dropdown — it loads automatically on selection.
 
@@ -24,6 +27,7 @@ Then:
 
 - Click **Preview Range** to inspect the selected data.
 - Click **Apply Range** once correct.
+- **Type a column name** for each column in the empty header row above the preview table (names are not taken from Excel automatically).
 
 ## 3) Configure Chart Settings
 
@@ -42,7 +46,7 @@ Under **Chart appearance**:
 - **Show point markers** — add dot markers on line and dumbbell charts.
 - **Series styling** — per-series color, line width, and dash style (appears after columns are resolved; applies to line charts and dumbbell endpoints).
 
-To rename columns: after clicking **Preview Range**, edit the column name directly in the preview table header row.
+To rename columns: after clicking **Preview Range**, type each column name in the empty header row above the preview (names are not imported from Excel).
 
 ## 4) Generate and Save Chart Presets
 
@@ -72,6 +76,8 @@ To update existing configurations:
 - Ensure that the configuration name matches the configuration that is to be updated
 - Click **Save configuration**.
 
+If a saved path no longer exists on disk, re-add the source with the correct absolute path.
+
 ## 6) Insert Charts into a DOCX Report
 
 Still in **Step 3**:
@@ -96,7 +102,8 @@ The application replaces placeholders based on chart keys and writes an output `
 
 ## Recommended Best Practices
 
-- Prefer desktop absolute paths for reliable template restore.
+- Use absolute paths that point to files on the machine running the app.
+- Load each data file once; switch **Active source** per chart preset when building multi-file reports.
 - Set chart keys early and keep them stable.
 - Preview/apply Excel ranges before saving chart presets.
 - Save templates after major updates.

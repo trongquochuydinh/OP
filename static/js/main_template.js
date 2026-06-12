@@ -3,8 +3,6 @@ let chartState = { active_chart_id: null, charts: [] };
 let columnContext = { source_id: null, range: null, columns: [], pie_style: null };
 /** Display labels from loaded presets or preview header edits (parallel to columnContext.columns). */
 let pendingColumnLabels = [];
-let lastLoadedSourcePath = '';
-let isSyncingSourcePathInput = false;
 let isAutoLoadingSheet = false;
 
 function setSourceStatus(message) {
@@ -47,6 +45,7 @@ function isDesktopBridgeAvailable() {
 function updateDesktopControlsVisibility() {
     const visible = isDesktopBridgeAvailable();
     $('.desktop-only').toggle(visible);
+    $('.web-only').toggle(!visible);
 }
 
 window.addEventListener('pywebviewready', function () {
@@ -54,13 +53,14 @@ window.addEventListener('pywebviewready', function () {
 });
 
 $(document).ready(function () {
-    $('#sourcePathInput').on('change', function () {
-        loadSourceFromPathInput();
+    $('#loadSourcesBtn').on('click', function () {
+        loadSourcesFromTextarea();
     });
-    $('#sourcePathInput').on('keydown', function (event) {
-        if (event.key === 'Enter') {
+
+    $('#multiPathInput').on('keydown', function (event) {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
-            loadSourceFromPathInput();
+            loadSourcesFromTextarea();
         }
     });
 
@@ -106,10 +106,11 @@ $(document).ready(function () {
         if (pendingColumnLabels.length !== cols.length) {
             pendingColumnLabels = cols.map((c, i) => {
                 const inp = $(`#rangePreview .preview-col-header[data-col-index="${i}"]`);
-                return inp.length ? inp.val().trim() || String(c) : String(c);
+                return inp.length ? inp.val().trim() : '';
             });
         }
-        pendingColumnLabels[idx] = $(this).val().trim() || String(cols[idx]);
+        pendingColumnLabels[idx] = $(this).val().trim();
+        updateStep2ContextDisplay();
         const captured = captureSeriesStyleFromDom();
         refreshSeriesStyleRows({
             initialSeries: fitSeriesInitial(captured, getSeriesStyleSlotCount(), DEFAULT_SERIES_COLORS)
@@ -118,6 +119,7 @@ $(document).ready(function () {
 
     $('#excelRangeInput').on('input', function () {
         updateChartActionAvailability();
+        updateStep2ContextDisplay();
     });
 
     $('.generate-plot').on('click', function () {
@@ -175,6 +177,10 @@ $(document).ready(function () {
         browseDesktopDocxTemplate();
     });
 
+    $('#chartKeyInput').on('input', function () {
+        updateStep2ContextDisplay();
+    });
+
     updateDesktopControlsVisibility();
     refreshTemplateList();
     refreshSources();
@@ -190,6 +196,83 @@ function getSelectedSource() {
     return sourceState.sources.find((source) => source.source_id === sourceId) || null;
 }
 
+function sourceDisplayPath(source) {
+    return source.source_path || source.source_path_canonical || source.path_value || source.source_path_relative || '';
+}
+
+function getLoadedSourcePathSet() {
+    const paths = new Set();
+    (sourceState.sources || []).forEach((source) => {
+        const p = String(sourceDisplayPath(source) || '').trim();
+        if (p) paths.add(p);
+    });
+    return paths;
+}
+
+function normalizePathsToLoad(paths) {
+    const loaded = getLoadedSourcePathSet();
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(paths) ? paths : []).forEach((raw) => {
+        const p = String(raw || '').trim();
+        if (!p || seen.has(p) || loaded.has(p)) return;
+        seen.add(p);
+        out.push(p);
+    });
+    return out;
+}
+
+function renderLoadedSourcesList() {
+    const container = $('#loadedSourcesList');
+    if (!container.length) return;
+
+    const sources = sourceState.sources || [];
+    container.empty();
+    if (sources.length === 0) {
+        container.append($('<div class="section-note">').text('No sources loaded yet.'));
+        return;
+    }
+
+    const heading = $('<div>').css({ fontWeight: 'bold', marginBottom: '6px' }).text('Loaded sources');
+    container.append(heading);
+
+    const list = $('<ul>').css({ margin: '0 0 8px 0', paddingLeft: '20px' });
+    sources.forEach((source) => {
+        const pathText = sourceDisplayPath(source) || '(no path)';
+        const name = source.file_name || source.source_id;
+        const sheet = source.sheet_name ? ` :: ${source.sheet_name}` : '';
+        const item = $('<li>').css({ marginBottom: '6px' });
+        item.append($('<span>').text(`${name}${sheet} — ${pathText} `));
+        const removeBtn = $('<button type="button">')
+            .text('Remove')
+            .css({ marginLeft: '6px' })
+            .on('click', function () {
+                removeSource(source.source_id);
+            });
+        item.append(removeBtn);
+        list.append(item);
+    });
+    container.append(list);
+}
+
+async function removeSource(sourceId) {
+    if (!sourceId) return;
+
+    try {
+        const response = await fetch(`/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'Could not remove source');
+        }
+        await refreshSources(result.active_source_id || null);
+        Plotly.purge('plot');
+        setSourceStatus('Source removed.');
+    } catch (error) {
+        console.error('Remove source error:', error);
+        alert(`Failed to remove source: ${error.message}`);
+    }
+}
+
 function sourceLabel(source) {
     const name = source.file_name || source.path_value || source.source_path_relative || source.source_path || source.source_id;
     const sheetSuffix = source.sheet_name ? ` :: ${source.sheet_name}` : '';
@@ -197,21 +280,56 @@ function sourceLabel(source) {
     return `${name}${sheetSuffix} [${source.file_type}]${pathSuffix}`;
 }
 
-function syncSourceUI() {
+function updateStep2ContextDisplay() {
+    const el = $('#step2ContextInfo');
+    if (!el.length) return;
+
+    const source = getSelectedSource();
+    if (!source) {
+        el.text('');
+        return;
+    }
+
+    const parts = [`Source: ${sourceLabel(source)}`];
+    const range = $('#excelRangeInput').val().trim();
+    if (source.file_type === 'xlsx' && range) {
+        parts.push(`Range: ${range}`);
+    }
+
+    const cols = columnContext.columns || [];
+    if (cols.length) {
+        const labels = cols.map((_, idx) => resolveColumnDisplayLabel(cols, idx));
+        const display = labels.map((label, idx) => label || String(cols[idx])).join(', ');
+        parts.push(`Columns: ${display}`);
+    }
+
+    const chartKey = $('#chartKeyInput').val().trim();
+    if (chartKey) {
+        parts.push(`Key: ${chartKey}`);
+    }
+
+    el.text(parts.join(' | '));
+}
+
+function refreshMultiPathTextarea() {
+    const paths = (sourceState.sources || [])
+        .map((source) => String(sourceDisplayPath(source) || '').trim())
+        .filter(Boolean);
+    $('#multiPathInput').val(paths.join('\n'));
+}
+
+function syncSourceUI(opts = {}) {
+    const preserveColumnContext = !!opts.preserveColumnContext;
     const source = getSelectedSource();
     if (!source) {
         $('#excelRangeDiv').hide();
         $('#sheetControls').hide();
         setColumnContext(null, null, [], null);
         setSourceStatus('Load a source to start charting.');
+        updateStep2ContextDisplay();
         updateChartActionAvailability();
         return;
     }
-
-    const pathValue = source.source_path || source.source_path_relative || '';
-    isSyncingSourcePathInput = true;
-    $('#sourcePathInput').val(pathValue);
-    isSyncingSourcePathInput = false;
 
     if (source.file_type === 'xlsx') {
         $('#sheetControls').show();
@@ -231,14 +349,20 @@ function syncSourceUI() {
         if (source.total_rows && source.total_cols) {
             $('#rangeInfo').text(`File dimensions: ${source.total_rows} rows x ${source.total_cols} columns`);
         }
-        setColumnContext(source.source_id, null, [], null);
+        if (!preserveColumnContext) {
+            setColumnContext(source.source_id, null, [], null);
+            pendingColumnLabels = [];
+        }
         setSourceStatus('Excel source loaded. Select range before generating or saving charts.');
     } else {
         $('#sheetControls').hide();
         $('#excelRangeDiv').hide();
-        setColumnContext(source.source_id, null, source.columns || [], null);
+        if (!preserveColumnContext) {
+            setColumnContext(source.source_id, null, source.columns || [], null);
+        }
         setSourceStatus('Source loaded. Configure chart settings and generate.');
     }
+    updateStep2ContextDisplay();
     updateChartActionAvailability();
 }
 
@@ -340,14 +464,14 @@ function resolveColumnDisplayLabel(columns, idx) {
     const cols = Array.isArray(columns) ? columns : [];
     const colName = cols[idx];
     if (colName === undefined) return '';
+    if (pendingColumnLabels.length === cols.length && pendingColumnLabels[idx] !== undefined) {
+        const v = String(pendingColumnLabels[idx]).trim();
+        if (v) return v;
+    }
     const previewInp = $(`#rangePreview .preview-col-header[data-col-index="${idx}"]`);
     if (previewInp.length) {
         const v = previewInp.val().trim();
-        return v || String(colName);
-    }
-    if (pendingColumnLabels.length === cols.length && pendingColumnLabels[idx] !== undefined) {
-        const v = String(pendingColumnLabels[idx]).trim();
-        return v || String(colName);
+        if (v) return v;
     }
     return String(colName);
 }
@@ -644,6 +768,7 @@ async function resolveColumnsForChart(source, rangeValue, updatePreview) {
     }
 
     updateChartActionAvailability();
+    updateStep2ContextDisplay();
     return cols;
 }
 
@@ -666,6 +791,7 @@ async function refreshSources(selectedSourceId = null) {
             select.append($('<option>').val('').text('No source loaded'));
             sourceState.active_source_id = null;
             syncSourceUI();
+            renderLoadedSourcesList();
             return;
         }
 
@@ -677,6 +803,8 @@ async function refreshSources(selectedSourceId = null) {
         sourceState.active_source_id = target;
         select.val(target);
         syncSourceUI();
+        refreshMultiPathTextarea();
+        renderLoadedSourcesList();
         setSourceStatus(`Loaded ${sourceState.sources.length} source(s).`);
     } catch (error) {
         console.error('Sources refresh error:', error);
@@ -685,15 +813,19 @@ async function refreshSources(selectedSourceId = null) {
 }
 
 async function loadSourcePaths(paths) {
-    const normalizedPaths = Array.isArray(paths) ? paths.filter(Boolean) : [];
-    if (normalizedPaths.length === 0) {
-        return;
+    const toLoad = normalizePathsToLoad(paths);
+    if (toLoad.length === 0) {
+        const rawCount = (Array.isArray(paths) ? paths : []).filter((p) => String(p || '').trim()).length;
+        if (rawCount > 0) {
+            setSourceStatus('All listed paths are already loaded.');
+        }
+        return { loaded: 0, failures: [] };
     }
 
     const failures = [];
     let lastSourceId = null;
 
-    for (const sourcePath of normalizedPaths) {
+    for (const sourcePath of toLoad) {
         try {
             const formData = new FormData();
             formData.append('source_path', sourcePath);
@@ -713,14 +845,31 @@ async function loadSourcePaths(paths) {
 
     await refreshSources(lastSourceId);
     Plotly.purge('plot');
-    if (lastSourceId && normalizedPaths.length > 0) {
-        lastLoadedSourcePath = String(normalizedPaths[normalizedPaths.length - 1]).trim();
-        setSourceStatus(`Loaded ${normalizedPaths.length} source path(s).`);
+
+    if (lastSourceId && toLoad.length > 0) {
+        const loadedCount = toLoad.length - failures.length;
+        if (loadedCount > 0) {
+            setSourceStatus(`Loaded ${loadedCount} source(s).`);
+        }
     }
 
     if (failures.length > 0) {
         alert(`Some sources failed to load:\n- ${failures.join('\n- ')}`);
     }
+
+    return { loaded: toLoad.length - failures.length, failures };
+}
+
+async function loadSourcesFromTextarea() {
+    const raw = $('#multiPathInput').val() || '';
+    const paths = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (paths.length === 0) {
+        alert('Enter at least one path (one per line).');
+        return;
+    }
+
+    await loadSourcePaths(paths);
+    refreshMultiPathTextarea();
 }
 
 async function pickDesktopSourceFiles() {
@@ -732,8 +881,8 @@ async function pickDesktopSourceFiles() {
     try {
         const pickedPaths = await window.pywebview.api.pick_source_files();
         await loadSourcePaths(pickedPaths || []);
+        refreshMultiPathTextarea();
         if (Array.isArray(pickedPaths) && pickedPaths.length > 0) {
-            $('#sourcePathInput').val(pickedPaths[0]);
             setSourceStatus(`Desktop selected ${pickedPaths.length} file(s) and loaded them.`);
         }
     } catch (error) {
@@ -756,40 +905,6 @@ async function browseDesktopDocxTemplate() {
     } catch (error) {
         console.error('Desktop DOCX picker error:', error);
         alert(`Desktop DOCX picker failed: ${error.message}`);
-    }
-}
-
-async function loadSourceFromPathInput() {
-    const sourcePath = $('#sourcePathInput').val().trim();
-    if (isSyncingSourcePathInput) {
-        return;
-    }
-    if (!sourcePath) {
-        lastLoadedSourcePath = '';
-        return;
-    }
-    if (sourcePath === lastLoadedSourcePath) {
-        return;
-    }
-
-    try {
-        const formData = new FormData();
-        formData.append('source_path', sourcePath);
-        const response = await fetch('/sources/load-path', {
-            method: 'POST',
-            body: formData
-        });
-        const result = await response.json();
-        if (!response.ok) {
-            throw new Error(result.error || 'Could not load path source');
-        }
-        await refreshSources(result.source_id);
-        Plotly.purge('plot');
-        lastLoadedSourcePath = sourcePath;
-        setSourceStatus('Source path loaded successfully.');
-    } catch (error) {
-        console.error('Load path source error:', error);
-        alert(`Load source failed: ${error.message}`);
     }
 }
 
@@ -1024,6 +1139,7 @@ async function refreshChartPresetList(selectedChartId = null) {
         if (charts.length === 0) {
             selector.append($('<option>').val('').text('No chart presets'));
             updateChartActionAvailability();
+            updateStep2ContextDisplay();
             return;
         }
 
@@ -1037,7 +1153,7 @@ async function refreshChartPresetList(selectedChartId = null) {
 
         const target = selectedChartId || chartState.active_chart_id || charts[0].id;
         selector.val(target);
-        updateChartActionAvailability();
+        await loadSelectedChartPresetIntoForm();
     } catch (error) {
         console.error('Chart preset list error:', error);
     }
@@ -1136,9 +1252,12 @@ function renderSavedChartsPanel(charts) {
     });
 }
 
-function loadSelectedChartPresetIntoForm() {
+async function loadSelectedChartPresetIntoForm() {
     const chartId = $('#chartPresetList').val();
-    if (!chartId) return;
+    if (!chartId) {
+        updateStep2ContextDisplay();
+        return;
+    }
 
     const chart = (chartState.charts || []).find((item) => item.id === chartId);
     if (!chart) return;
@@ -1150,15 +1269,31 @@ function loadSelectedChartPresetIntoForm() {
     if (chart.source_id) {
         sourceState.active_source_id = chart.source_id;
         $('#sourceSelect').val(chart.source_id);
-        syncSourceUI();
+        syncSourceUI({ preserveColumnContext: true });
     }
     if (chart.range) {
         $('#excelRangeInput').val(chart.range);
+    } else {
+        $('#excelRangeInput').val('');
     }
+
+    pendingColumnLabels = [];
     setColumnContext(chart.source_id || null, chart.range || null, chart.columns || [], null);
     applyLoadedColumnLabels(chart.column_labels || []);
     $('#countsModeCheckbox').prop('checked', !!chart.counts_mode);
+
+    const source = getSelectedSource();
+    if (source && source.file_type === 'xlsx' && chart.range) {
+        try {
+            await resolveColumnsForChart(source, chart.range, true);
+            applyLoadedColumnLabels(chart.column_labels || []);
+        } catch (error) {
+            console.error('Preset range resolve error:', error);
+        }
+    }
+
     syncPlotStyleForm(chart.plot_style || {});
+    updateStep2ContextDisplay();
     updateChartActionAvailability();
 }
 
@@ -1261,7 +1396,10 @@ async function loadTemplate() {
             });
             const sourceResult = await sourceResponse.json();
             if (!sourceResponse.ok) {
-                warnings.push(`Could not load '${sourcePath}': ${sourceResult.error || 'failed to load'}`);
+                const detail = sourceResult.error || 'failed to load';
+                warnings.push(
+                    `File not found at saved path '${sourcePath}' — re-add the source with the correct absolute path. (${detail})`
+                );
             } else {
                 restoredSourceIds.add(source.source_id);
             }
@@ -1286,26 +1424,6 @@ async function loadTemplate() {
 
         const blockedCharts = (chartState.charts || []).filter((chart) => !restoredSourceIds.has(chart.source_id));
 
-        const activeChart = chartState.charts.find((item) => item.id === chartState.active_chart_id) || chartState.charts[0];
-        if (activeChart) {
-            $('#chartTypeInput').val(activeChart.chart_type);
-            $('#plotTitleInput').val(activeChart.title || '');
-            $('#chartKeyInput').val(activeChart.chart_key || '');
-            $('#chartFontSizeInput').val(activeChart.font_size || 12);
-            if (activeChart.source_id) {
-                sourceState.active_source_id = activeChart.source_id;
-                $('#sourceSelect').val(activeChart.source_id);
-                syncSourceUI();
-            }
-            if (activeChart.range) {
-                $('#excelRangeInput').val(activeChart.range);
-            }
-            setColumnContext(activeChart.source_id || null, activeChart.range || null, activeChart.columns || [], null);
-            applyLoadedColumnLabels(activeChart.column_labels || []);
-            $('#countsModeCheckbox').prop('checked', !!activeChart.counts_mode);
-            syncPlotStyleForm(activeChart.plot_style || {});
-        }
-
         const warningText = warnings.length ? ` Warnings: ${warnings.join('; ')}` : '';
         const restoreText = ` Restored sources: ${restoredSourceIds.size}/${sources.length}.`;
         const blockedText = blockedCharts.length ? ` Blocked charts (missing sources): ${blockedCharts.length}.` : '';
@@ -1326,11 +1444,8 @@ async function resetWorkspace() {
         sourceState = { active_source_id: null, sources: [] };
         chartState = { active_chart_id: null, charts: [] };
         setColumnContext(null, null, [], null);
-        lastLoadedSourcePath = '';
 
-        isSyncingSourcePathInput = true;
-        $('#sourcePathInput').val('');
-        isSyncingSourcePathInput = false;
+        $('#multiPathInput').val('');
         $('#excelRangeInput').val('');
         $('#plotTitleInput').val('');
         $('#chartKeyInput').val('');
@@ -1356,6 +1471,7 @@ async function resetWorkspace() {
 
         setSourceStatus('Workspace reset. Load a source to start charting.');
         $('#templateInfo').text('Workspace reset. Saved report configurations on disk are unchanged.');
+        updateStep2ContextDisplay();
         updateChartActionAvailability();
     } catch (error) {
         console.error('Workspace reset error:', error);
@@ -1386,24 +1502,19 @@ function renderRangePreview(preview, excelColumns, truncation) {
         headerKeys = fullCols;
     }
 
-    const chart = getActiveChartPreset();
-    const chartHints = chart && Array.isArray(chart.column_labels) ? chart.column_labels : [];
-
     const table = $('<table border="1">');
     const headerRow = $('<tr>');
     headerKeys.forEach((colKey, idx) => {
-        let displayVal = String(colKey);
+        let displayVal = '';
         if (pendingColumnLabels.length === fullCols.length && pendingColumnLabels[idx] !== undefined) {
-            const p = String(pendingColumnLabels[idx]).trim();
-            if (p) displayVal = p;
-        } else if (chartHints[idx] !== undefined && String(chartHints[idx]).trim() !== '') {
-            displayVal = String(chartHints[idx]);
+            displayVal = String(pendingColumnLabels[idx]).trim();
         }
         const th = $('<th>').css({ padding: '2px', verticalAlign: 'bottom' });
         const input = $('<input type="text">')
             .addClass('preview-col-header')
             .attr('data-col-index', String(idx))
             .attr('aria-label', `Column ${idx + 1} label`)
+            .attr('placeholder', `Column ${idx + 1}`)
             .val(displayVal);
         th.append(input);
         headerRow.append(th);

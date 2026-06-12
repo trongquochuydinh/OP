@@ -18,12 +18,18 @@
 - Generate Word (`.docx`) reports by replacing `{{CHART:key}}` placeholders with exported chart images
 - Control the output location via the output name/path field (plain name saves next to template; full path saves at that location)
 
-## Run (web) - deprecated
+## Run (web, local)
+
+For local use on the same machine where your Excel files live:
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
+
+Open the URL shown in the terminal (typically `http://127.0.0.1:5000`).
+
+**Loading data sources:** paste absolute paths to `.xlsx` files on this machine into the paths box (one per line), then click **Load sources**. Saved configurations store these absolute paths and reload them from disk.
 
 ## Run (desktop wrapper)
 
