@@ -3,8 +3,6 @@ let chartState = { active_chart_id: null, charts: [] };
 let columnContext = { source_id: null, range: null, columns: [], pie_style: null };
 /** Display labels from loaded presets or preview header edits (parallel to columnContext.columns). */
 let pendingColumnLabels = [];
-let lastLoadedSourcePath = '';
-let isSyncingSourcePathInput = false;
 let isAutoLoadingSheet = false;
 
 function setSourceStatus(message) {
@@ -47,6 +45,7 @@ function isDesktopBridgeAvailable() {
 function updateDesktopControlsVisibility() {
     const visible = isDesktopBridgeAvailable();
     $('.desktop-only').toggle(visible);
+    $('.web-only').toggle(!visible);
 }
 
 window.addEventListener('pywebviewready', function () {
@@ -54,13 +53,14 @@ window.addEventListener('pywebviewready', function () {
 });
 
 $(document).ready(function () {
-    $('#sourcePathInput').on('change', function () {
-        loadSourceFromPathInput();
+    $('#loadSourcesBtn').on('click', function () {
+        loadSourcesFromTextarea();
     });
-    $('#sourcePathInput').on('keydown', function (event) {
-        if (event.key === 'Enter') {
+
+    $('#multiPathInput').on('keydown', function (event) {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
-            loadSourceFromPathInput();
+            loadSourcesFromTextarea();
         }
     });
 
@@ -196,6 +196,83 @@ function getSelectedSource() {
     return sourceState.sources.find((source) => source.source_id === sourceId) || null;
 }
 
+function sourceDisplayPath(source) {
+    return source.source_path || source.source_path_canonical || source.path_value || source.source_path_relative || '';
+}
+
+function getLoadedSourcePathSet() {
+    const paths = new Set();
+    (sourceState.sources || []).forEach((source) => {
+        const p = String(sourceDisplayPath(source) || '').trim();
+        if (p) paths.add(p);
+    });
+    return paths;
+}
+
+function normalizePathsToLoad(paths) {
+    const loaded = getLoadedSourcePathSet();
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(paths) ? paths : []).forEach((raw) => {
+        const p = String(raw || '').trim();
+        if (!p || seen.has(p) || loaded.has(p)) return;
+        seen.add(p);
+        out.push(p);
+    });
+    return out;
+}
+
+function renderLoadedSourcesList() {
+    const container = $('#loadedSourcesList');
+    if (!container.length) return;
+
+    const sources = sourceState.sources || [];
+    container.empty();
+    if (sources.length === 0) {
+        container.append($('<div class="section-note">').text('No sources loaded yet.'));
+        return;
+    }
+
+    const heading = $('<div>').css({ fontWeight: 'bold', marginBottom: '6px' }).text('Loaded sources');
+    container.append(heading);
+
+    const list = $('<ul>').css({ margin: '0 0 8px 0', paddingLeft: '20px' });
+    sources.forEach((source) => {
+        const pathText = sourceDisplayPath(source) || '(no path)';
+        const name = source.file_name || source.source_id;
+        const sheet = source.sheet_name ? ` :: ${source.sheet_name}` : '';
+        const item = $('<li>').css({ marginBottom: '6px' });
+        item.append($('<span>').text(`${name}${sheet} — ${pathText} `));
+        const removeBtn = $('<button type="button">')
+            .text('Remove')
+            .css({ marginLeft: '6px' })
+            .on('click', function () {
+                removeSource(source.source_id);
+            });
+        item.append(removeBtn);
+        list.append(item);
+    });
+    container.append(list);
+}
+
+async function removeSource(sourceId) {
+    if (!sourceId) return;
+
+    try {
+        const response = await fetch(`/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'Could not remove source');
+        }
+        await refreshSources(result.active_source_id || null);
+        Plotly.purge('plot');
+        setSourceStatus('Source removed.');
+    } catch (error) {
+        console.error('Remove source error:', error);
+        alert(`Failed to remove source: ${error.message}`);
+    }
+}
+
 function sourceLabel(source) {
     const name = source.file_name || source.path_value || source.source_path_relative || source.source_path || source.source_id;
     const sheetSuffix = source.sheet_name ? ` :: ${source.sheet_name}` : '';
@@ -234,6 +311,13 @@ function updateStep2ContextDisplay() {
     el.text(parts.join(' | '));
 }
 
+function refreshMultiPathTextarea() {
+    const paths = (sourceState.sources || [])
+        .map((source) => String(sourceDisplayPath(source) || '').trim())
+        .filter(Boolean);
+    $('#multiPathInput').val(paths.join('\n'));
+}
+
 function syncSourceUI(opts = {}) {
     const preserveColumnContext = !!opts.preserveColumnContext;
     const source = getSelectedSource();
@@ -246,11 +330,6 @@ function syncSourceUI(opts = {}) {
         updateChartActionAvailability();
         return;
     }
-
-    const pathValue = source.source_path || source.source_path_relative || '';
-    isSyncingSourcePathInput = true;
-    $('#sourcePathInput').val(pathValue);
-    isSyncingSourcePathInput = false;
 
     if (source.file_type === 'xlsx') {
         $('#sheetControls').show();
@@ -712,6 +791,7 @@ async function refreshSources(selectedSourceId = null) {
             select.append($('<option>').val('').text('No source loaded'));
             sourceState.active_source_id = null;
             syncSourceUI();
+            renderLoadedSourcesList();
             return;
         }
 
@@ -723,6 +803,8 @@ async function refreshSources(selectedSourceId = null) {
         sourceState.active_source_id = target;
         select.val(target);
         syncSourceUI();
+        refreshMultiPathTextarea();
+        renderLoadedSourcesList();
         setSourceStatus(`Loaded ${sourceState.sources.length} source(s).`);
     } catch (error) {
         console.error('Sources refresh error:', error);
@@ -731,15 +813,19 @@ async function refreshSources(selectedSourceId = null) {
 }
 
 async function loadSourcePaths(paths) {
-    const normalizedPaths = Array.isArray(paths) ? paths.filter(Boolean) : [];
-    if (normalizedPaths.length === 0) {
-        return;
+    const toLoad = normalizePathsToLoad(paths);
+    if (toLoad.length === 0) {
+        const rawCount = (Array.isArray(paths) ? paths : []).filter((p) => String(p || '').trim()).length;
+        if (rawCount > 0) {
+            setSourceStatus('All listed paths are already loaded.');
+        }
+        return { loaded: 0, failures: [] };
     }
 
     const failures = [];
     let lastSourceId = null;
 
-    for (const sourcePath of normalizedPaths) {
+    for (const sourcePath of toLoad) {
         try {
             const formData = new FormData();
             formData.append('source_path', sourcePath);
@@ -759,14 +845,31 @@ async function loadSourcePaths(paths) {
 
     await refreshSources(lastSourceId);
     Plotly.purge('plot');
-    if (lastSourceId && normalizedPaths.length > 0) {
-        lastLoadedSourcePath = String(normalizedPaths[normalizedPaths.length - 1]).trim();
-        setSourceStatus(`Loaded ${normalizedPaths.length} source path(s).`);
+
+    if (lastSourceId && toLoad.length > 0) {
+        const loadedCount = toLoad.length - failures.length;
+        if (loadedCount > 0) {
+            setSourceStatus(`Loaded ${loadedCount} source(s).`);
+        }
     }
 
     if (failures.length > 0) {
         alert(`Some sources failed to load:\n- ${failures.join('\n- ')}`);
     }
+
+    return { loaded: toLoad.length - failures.length, failures };
+}
+
+async function loadSourcesFromTextarea() {
+    const raw = $('#multiPathInput').val() || '';
+    const paths = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (paths.length === 0) {
+        alert('Enter at least one path (one per line).');
+        return;
+    }
+
+    await loadSourcePaths(paths);
+    refreshMultiPathTextarea();
 }
 
 async function pickDesktopSourceFiles() {
@@ -778,8 +881,8 @@ async function pickDesktopSourceFiles() {
     try {
         const pickedPaths = await window.pywebview.api.pick_source_files();
         await loadSourcePaths(pickedPaths || []);
+        refreshMultiPathTextarea();
         if (Array.isArray(pickedPaths) && pickedPaths.length > 0) {
-            $('#sourcePathInput').val(pickedPaths[0]);
             setSourceStatus(`Desktop selected ${pickedPaths.length} file(s) and loaded them.`);
         }
     } catch (error) {
@@ -802,40 +905,6 @@ async function browseDesktopDocxTemplate() {
     } catch (error) {
         console.error('Desktop DOCX picker error:', error);
         alert(`Desktop DOCX picker failed: ${error.message}`);
-    }
-}
-
-async function loadSourceFromPathInput() {
-    const sourcePath = $('#sourcePathInput').val().trim();
-    if (isSyncingSourcePathInput) {
-        return;
-    }
-    if (!sourcePath) {
-        lastLoadedSourcePath = '';
-        return;
-    }
-    if (sourcePath === lastLoadedSourcePath) {
-        return;
-    }
-
-    try {
-        const formData = new FormData();
-        formData.append('source_path', sourcePath);
-        const response = await fetch('/sources/load-path', {
-            method: 'POST',
-            body: formData
-        });
-        const result = await response.json();
-        if (!response.ok) {
-            throw new Error(result.error || 'Could not load path source');
-        }
-        await refreshSources(result.source_id);
-        Plotly.purge('plot');
-        lastLoadedSourcePath = sourcePath;
-        setSourceStatus('Source path loaded successfully.');
-    } catch (error) {
-        console.error('Load path source error:', error);
-        alert(`Load source failed: ${error.message}`);
     }
 }
 
@@ -1327,7 +1396,10 @@ async function loadTemplate() {
             });
             const sourceResult = await sourceResponse.json();
             if (!sourceResponse.ok) {
-                warnings.push(`Could not load '${sourcePath}': ${sourceResult.error || 'failed to load'}`);
+                const detail = sourceResult.error || 'failed to load';
+                warnings.push(
+                    `File not found at saved path '${sourcePath}' — re-add the source with the correct absolute path. (${detail})`
+                );
             } else {
                 restoredSourceIds.add(source.source_id);
             }
@@ -1372,11 +1444,8 @@ async function resetWorkspace() {
         sourceState = { active_source_id: null, sources: [] };
         chartState = { active_chart_id: null, charts: [] };
         setColumnContext(null, null, [], null);
-        lastLoadedSourcePath = '';
 
-        isSyncingSourcePathInput = true;
-        $('#sourcePathInput').val('');
-        isSyncingSourcePathInput = false;
+        $('#multiPathInput').val('');
         $('#excelRangeInput').val('');
         $('#plotTitleInput').val('');
         $('#chartKeyInput').val('');

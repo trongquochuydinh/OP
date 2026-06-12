@@ -174,15 +174,24 @@
 
     <div class="workflow-section">
         <h3>Step 1: Select Data Source and Range</h3>
-        <div>
+        <div class="desktop-only" style="display: none;">
             <label>Select file(s) (.xlsx): </label>
-            <button type="button" id="desktopSelectFilesBtn" class="desktop-only" style="display: none;">Desktop: Select Files</button>
+            <button type="button" id="desktopSelectFilesBtn">Desktop: Select Files</button>
         </div>
         <div style="margin-top: 8px;">
-            <label for="sourcePathInput" style="font-weight: normal;">Source path:</label>
-            <input type="text" id="sourcePathInput" placeholder="/absolute/path/to/file.xlsx" style="min-width: 360px;">
+            <label for="multiPathInput" style="font-weight: normal;">Source paths (one absolute path per line):</label>
+            <textarea id="multiPathInput" rows="5" style="width: 100%; max-width: 640px; margin-top: 4px;" placeholder="/path/to/first.xlsx&#10;/path/to/second.xlsx"></textarea>
+            <div style="margin-top: 6px;">
+                <button type="button" id="loadSourcesBtn">Load sources</button>
+            </div>
         </div>
-        <div class="section-note">Use Desktop: Select Files for normal workflow. Manual path entry auto-loads on change or Enter.</div>
+        <div id="webSourceHelp" class="section-note web-only">
+            Enter absolute paths to <code>.xlsx</code> files on the machine running this app (e.g. <code>/Users/you/data/file.xlsx</code> or <code>C:\data\file.xlsx</code>), one per line, then click <strong>Load sources</strong>. Use <strong>Active source</strong> to switch between loaded files.
+        </div>
+        <div id="desktopSourceHelp" class="section-note desktop-only" style="display: none;">
+            Use <strong>Desktop: Select Files</strong> or paste paths below (one per line) and click <strong>Load sources</strong>.
+        </div>
+        <div id="loadedSourcesList" style="margin-top: 10px;"></div>
         <div style="margin-top: 8px;">
             <label for="sourceSelect" style="font-weight: normal;">Active source:</label>
             <select id="sourceSelect" style="min-width: 320px;"></select>

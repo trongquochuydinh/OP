@@ -342,6 +342,20 @@ def reset_sources():
     return jsonify({"success": True})
 
 
+@date_processing_bp.route("/sources/<source_id>", methods=["DELETE"])
+def delete_source(source_id):
+    global ACTIVE_SOURCE_ID
+
+    if source_id not in SOURCES:
+        return jsonify({"error": "Unknown source_id"}), 404
+
+    del SOURCES[source_id]
+    if ACTIVE_SOURCE_ID == source_id:
+        ACTIVE_SOURCE_ID = next(iter(SOURCES.keys()), None)
+
+    return jsonify({"success": True, "active_source_id": ACTIVE_SOURCE_ID})
+
+
 @date_processing_bp.route("/preview-range", methods=["POST"])
 def preview_range():
     source_id = request.form.get("source_id", "")
