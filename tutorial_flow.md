@@ -24,6 +24,7 @@ Then:
 
 - Click **Preview Range** to inspect the selected data.
 - Click **Apply Range** once correct.
+- **Type a column name** for each column in the empty header row above the preview table (names are not taken from Excel automatically).
 
 ## 3) Configure Chart Settings
 
@@ -42,7 +43,7 @@ Under **Chart appearance**:
 - **Show point markers** — add dot markers on line and dumbbell charts.
 - **Series styling** — per-series color, line width, and dash style (appears after columns are resolved; applies to line charts and dumbbell endpoints).
 
-To rename columns: after clicking **Preview Range**, edit the column name directly in the preview table header row.
+To rename columns: after clicking **Preview Range**, type each column name in the empty header row above the preview (names are not imported from Excel).
 
 ## 4) Generate and Save Chart Presets
 

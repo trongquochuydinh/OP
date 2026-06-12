@@ -8,6 +8,7 @@ from blueprints.data_processing.normalizer import normalize_xlsx, normalize_pars
 from blueprints.data_processing.excel_utils import (
     apply_multiple_ranges_to_dataframe,
     apply_range_to_dataframe,
+    number_to_excel_column,
     parse_excel_range,
     parse_multiple_excel_ranges,
 )
@@ -173,10 +174,18 @@ def get_dataframe_for_chart(source_id, range_str=None):
 
     if "," in range_str:
         ranges = parse_multiple_excel_ranges(range_str)
-        subset_df, _ = apply_multiple_ranges_to_dataframe(source["raw_df"], ranges)
+        subset_df, excel_cols = apply_multiple_ranges_to_dataframe(source["raw_df"], ranges)
+        if excel_cols and len(subset_df.columns) == len(excel_cols):
+            subset_df.columns = excel_cols
     else:
         range_info = parse_excel_range(range_str)
         subset_df = apply_range_to_dataframe(source["raw_df"], range_info)
+        col_keys = [
+            number_to_excel_column(col_idx)
+            for col_idx in range(range_info["start_col"], range_info["end_col"] + 1)
+        ]
+        if col_keys and len(subset_df.columns) <= len(col_keys):
+            subset_df.columns = col_keys[: len(subset_df.columns)]
 
     return normalize_xlsx(subset_df)
 

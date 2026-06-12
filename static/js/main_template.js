@@ -106,10 +106,11 @@ $(document).ready(function () {
         if (pendingColumnLabels.length !== cols.length) {
             pendingColumnLabels = cols.map((c, i) => {
                 const inp = $(`#rangePreview .preview-col-header[data-col-index="${i}"]`);
-                return inp.length ? inp.val().trim() || String(c) : String(c);
+                return inp.length ? inp.val().trim() : '';
             });
         }
-        pendingColumnLabels[idx] = $(this).val().trim() || String(cols[idx]);
+        pendingColumnLabels[idx] = $(this).val().trim();
+        updateStep2ContextDisplay();
         const captured = captureSeriesStyleFromDom();
         refreshSeriesStyleRows({
             initialSeries: fitSeriesInitial(captured, getSeriesStyleSlotCount(), DEFAULT_SERIES_COLORS)
@@ -118,6 +119,7 @@ $(document).ready(function () {
 
     $('#excelRangeInput').on('input', function () {
         updateChartActionAvailability();
+        updateStep2ContextDisplay();
     });
 
     $('.generate-plot').on('click', function () {
@@ -175,6 +177,10 @@ $(document).ready(function () {
         browseDesktopDocxTemplate();
     });
 
+    $('#chartKeyInput').on('input', function () {
+        updateStep2ContextDisplay();
+    });
+
     updateDesktopControlsVisibility();
     refreshTemplateList();
     refreshSources();
@@ -197,13 +203,46 @@ function sourceLabel(source) {
     return `${name}${sheetSuffix} [${source.file_type}]${pathSuffix}`;
 }
 
-function syncSourceUI() {
+function updateStep2ContextDisplay() {
+    const el = $('#step2ContextInfo');
+    if (!el.length) return;
+
+    const source = getSelectedSource();
+    if (!source) {
+        el.text('');
+        return;
+    }
+
+    const parts = [`Source: ${sourceLabel(source)}`];
+    const range = $('#excelRangeInput').val().trim();
+    if (source.file_type === 'xlsx' && range) {
+        parts.push(`Range: ${range}`);
+    }
+
+    const cols = columnContext.columns || [];
+    if (cols.length) {
+        const labels = cols.map((_, idx) => resolveColumnDisplayLabel(cols, idx));
+        const display = labels.map((label, idx) => label || String(cols[idx])).join(', ');
+        parts.push(`Columns: ${display}`);
+    }
+
+    const chartKey = $('#chartKeyInput').val().trim();
+    if (chartKey) {
+        parts.push(`Key: ${chartKey}`);
+    }
+
+    el.text(parts.join(' | '));
+}
+
+function syncSourceUI(opts = {}) {
+    const preserveColumnContext = !!opts.preserveColumnContext;
     const source = getSelectedSource();
     if (!source) {
         $('#excelRangeDiv').hide();
         $('#sheetControls').hide();
         setColumnContext(null, null, [], null);
         setSourceStatus('Load a source to start charting.');
+        updateStep2ContextDisplay();
         updateChartActionAvailability();
         return;
     }
@@ -231,14 +270,20 @@ function syncSourceUI() {
         if (source.total_rows && source.total_cols) {
             $('#rangeInfo').text(`File dimensions: ${source.total_rows} rows x ${source.total_cols} columns`);
         }
-        setColumnContext(source.source_id, null, [], null);
+        if (!preserveColumnContext) {
+            setColumnContext(source.source_id, null, [], null);
+            pendingColumnLabels = [];
+        }
         setSourceStatus('Excel source loaded. Select range before generating or saving charts.');
     } else {
         $('#sheetControls').hide();
         $('#excelRangeDiv').hide();
-        setColumnContext(source.source_id, null, source.columns || [], null);
+        if (!preserveColumnContext) {
+            setColumnContext(source.source_id, null, source.columns || [], null);
+        }
         setSourceStatus('Source loaded. Configure chart settings and generate.');
     }
+    updateStep2ContextDisplay();
     updateChartActionAvailability();
 }
 
@@ -340,14 +385,14 @@ function resolveColumnDisplayLabel(columns, idx) {
     const cols = Array.isArray(columns) ? columns : [];
     const colName = cols[idx];
     if (colName === undefined) return '';
+    if (pendingColumnLabels.length === cols.length && pendingColumnLabels[idx] !== undefined) {
+        const v = String(pendingColumnLabels[idx]).trim();
+        if (v) return v;
+    }
     const previewInp = $(`#rangePreview .preview-col-header[data-col-index="${idx}"]`);
     if (previewInp.length) {
         const v = previewInp.val().trim();
-        return v || String(colName);
-    }
-    if (pendingColumnLabels.length === cols.length && pendingColumnLabels[idx] !== undefined) {
-        const v = String(pendingColumnLabels[idx]).trim();
-        return v || String(colName);
+        if (v) return v;
     }
     return String(colName);
 }
@@ -644,6 +689,7 @@ async function resolveColumnsForChart(source, rangeValue, updatePreview) {
     }
 
     updateChartActionAvailability();
+    updateStep2ContextDisplay();
     return cols;
 }
 
@@ -1024,6 +1070,7 @@ async function refreshChartPresetList(selectedChartId = null) {
         if (charts.length === 0) {
             selector.append($('<option>').val('').text('No chart presets'));
             updateChartActionAvailability();
+            updateStep2ContextDisplay();
             return;
         }
 
@@ -1037,7 +1084,7 @@ async function refreshChartPresetList(selectedChartId = null) {
 
         const target = selectedChartId || chartState.active_chart_id || charts[0].id;
         selector.val(target);
-        updateChartActionAvailability();
+        await loadSelectedChartPresetIntoForm();
     } catch (error) {
         console.error('Chart preset list error:', error);
     }
@@ -1136,9 +1183,12 @@ function renderSavedChartsPanel(charts) {
     });
 }
 
-function loadSelectedChartPresetIntoForm() {
+async function loadSelectedChartPresetIntoForm() {
     const chartId = $('#chartPresetList').val();
-    if (!chartId) return;
+    if (!chartId) {
+        updateStep2ContextDisplay();
+        return;
+    }
 
     const chart = (chartState.charts || []).find((item) => item.id === chartId);
     if (!chart) return;
@@ -1150,15 +1200,31 @@ function loadSelectedChartPresetIntoForm() {
     if (chart.source_id) {
         sourceState.active_source_id = chart.source_id;
         $('#sourceSelect').val(chart.source_id);
-        syncSourceUI();
+        syncSourceUI({ preserveColumnContext: true });
     }
     if (chart.range) {
         $('#excelRangeInput').val(chart.range);
+    } else {
+        $('#excelRangeInput').val('');
     }
+
+    pendingColumnLabels = [];
     setColumnContext(chart.source_id || null, chart.range || null, chart.columns || [], null);
     applyLoadedColumnLabels(chart.column_labels || []);
     $('#countsModeCheckbox').prop('checked', !!chart.counts_mode);
+
+    const source = getSelectedSource();
+    if (source && source.file_type === 'xlsx' && chart.range) {
+        try {
+            await resolveColumnsForChart(source, chart.range, true);
+            applyLoadedColumnLabels(chart.column_labels || []);
+        } catch (error) {
+            console.error('Preset range resolve error:', error);
+        }
+    }
+
     syncPlotStyleForm(chart.plot_style || {});
+    updateStep2ContextDisplay();
     updateChartActionAvailability();
 }
 
@@ -1286,26 +1352,6 @@ async function loadTemplate() {
 
         const blockedCharts = (chartState.charts || []).filter((chart) => !restoredSourceIds.has(chart.source_id));
 
-        const activeChart = chartState.charts.find((item) => item.id === chartState.active_chart_id) || chartState.charts[0];
-        if (activeChart) {
-            $('#chartTypeInput').val(activeChart.chart_type);
-            $('#plotTitleInput').val(activeChart.title || '');
-            $('#chartKeyInput').val(activeChart.chart_key || '');
-            $('#chartFontSizeInput').val(activeChart.font_size || 12);
-            if (activeChart.source_id) {
-                sourceState.active_source_id = activeChart.source_id;
-                $('#sourceSelect').val(activeChart.source_id);
-                syncSourceUI();
-            }
-            if (activeChart.range) {
-                $('#excelRangeInput').val(activeChart.range);
-            }
-            setColumnContext(activeChart.source_id || null, activeChart.range || null, activeChart.columns || [], null);
-            applyLoadedColumnLabels(activeChart.column_labels || []);
-            $('#countsModeCheckbox').prop('checked', !!activeChart.counts_mode);
-            syncPlotStyleForm(activeChart.plot_style || {});
-        }
-
         const warningText = warnings.length ? ` Warnings: ${warnings.join('; ')}` : '';
         const restoreText = ` Restored sources: ${restoredSourceIds.size}/${sources.length}.`;
         const blockedText = blockedCharts.length ? ` Blocked charts (missing sources): ${blockedCharts.length}.` : '';
@@ -1356,6 +1402,7 @@ async function resetWorkspace() {
 
         setSourceStatus('Workspace reset. Load a source to start charting.');
         $('#templateInfo').text('Workspace reset. Saved report configurations on disk are unchanged.');
+        updateStep2ContextDisplay();
         updateChartActionAvailability();
     } catch (error) {
         console.error('Workspace reset error:', error);
@@ -1386,24 +1433,19 @@ function renderRangePreview(preview, excelColumns, truncation) {
         headerKeys = fullCols;
     }
 
-    const chart = getActiveChartPreset();
-    const chartHints = chart && Array.isArray(chart.column_labels) ? chart.column_labels : [];
-
     const table = $('<table border="1">');
     const headerRow = $('<tr>');
     headerKeys.forEach((colKey, idx) => {
-        let displayVal = String(colKey);
+        let displayVal = '';
         if (pendingColumnLabels.length === fullCols.length && pendingColumnLabels[idx] !== undefined) {
-            const p = String(pendingColumnLabels[idx]).trim();
-            if (p) displayVal = p;
-        } else if (chartHints[idx] !== undefined && String(chartHints[idx]).trim() !== '') {
-            displayVal = String(chartHints[idx]);
+            displayVal = String(pendingColumnLabels[idx]).trim();
         }
         const th = $('<th>').css({ padding: '2px', verticalAlign: 'bottom' });
         const input = $('<input type="text">')
             .addClass('preview-col-header')
             .attr('data-col-index', String(idx))
             .attr('aria-label', `Column ${idx + 1} label`)
+            .attr('placeholder', `Column ${idx + 1}`)
             .val(displayVal);
         th.append(input);
         headerRow.append(th);

@@ -3,6 +3,26 @@ import yaml
 from io import BytesIO
 from pathlib import Path
 
+
+def _format_excel_read_error(exc):
+    message = str(exc)
+    lowered = message.lower()
+
+    if "not a zip file" in lowered or ("zip" in lowered and "not" in lowered and "archiv" in lowered):
+        return ValueError(
+            "File is not a valid .xlsx workbook. If this is an older .xls file, a CSV, "
+            "or a corrupted download, open it in Excel and save as .xlsx, then try again."
+        )
+
+    if "not supported between instances of 'int' and 'str'" in message:
+        return ValueError(
+            "Could not read the Excel file because of inconsistent cell types in the sheet. "
+            "Try re-saving the file from Excel or narrowing the selected range."
+        )
+
+    return exc
+
+
 def _parse_from_name_and_reader(filename, excel_reader, yaml_reader, sheet_name=None):
     lowered = filename.lower()
 
@@ -24,7 +44,11 @@ def _parse_from_name_and_reader(filename, excel_reader, yaml_reader, sheet_name=
 
 def _read_excel_from_bytes(content_bytes, selected_sheet=None):
     excel_buffer = BytesIO(content_bytes)
-    workbook = pd.ExcelFile(excel_buffer)
+    try:
+        workbook = pd.ExcelFile(excel_buffer)
+    except Exception as exc:
+        raise _format_excel_read_error(exc) from exc
+
     available_sheets = list(workbook.sheet_names)
     if not available_sheets:
         raise ValueError("Workbook has no sheets")
@@ -33,7 +57,11 @@ def _read_excel_from_bytes(content_bytes, selected_sheet=None):
     if target_sheet not in available_sheets:
         raise ValueError(f"Sheet '{target_sheet}' not found. Available sheets: {', '.join(available_sheets)}")
 
-    dataframe = pd.read_excel(workbook, sheet_name=target_sheet)
+    try:
+        dataframe = pd.read_excel(workbook, sheet_name=target_sheet, header=None)
+    except Exception as exc:
+        raise _format_excel_read_error(exc) from exc
+
     return dataframe, target_sheet, available_sheets
 
 

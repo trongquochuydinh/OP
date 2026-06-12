@@ -204,13 +204,14 @@
             <div style="font-size: 0.85em; color: #888; margin-top: 5px;">
                 <strong>Plotting logic:</strong> 1 column = frequency chart; 2 columns = first is X, second is Y (unless &quot;Count row occurrences&quot; is checked — then one bar per distinct pair); 3+ columns = first is shared category and the rest are separate series (with counts checked: non-null counts per category per series). <strong>Dumbbell chart:</strong> use 2 columns for category + low value only, or 3 columns for category, low, and high (extra columns are ignored).<br>
                 <strong>Range formats:</strong> A2:C10 (data subset), A (column), A:C (columns range), B,D (non-neighboring full columns)<br>
-                <strong>Column names:</strong> Edit labels in the preview table header row after &quot;Preview Range&quot;.
+                <strong>Column names:</strong> After &quot;Preview Range&quot;, type a name for each column in the empty header row above the data.
             </div>
         </div>
     </div>
 
     <div class="workflow-section">
         <h3>Step 2: Configure and Build Charts</h3>
+        <div id="step2ContextInfo" class="section-note" style="margin-bottom: 10px;"></div>
         <div class="edit-div">
             <label for="chartTypeInput">Select chart type</label>
             <select id="chartTypeInput" class="chart-type-select">

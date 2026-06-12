@@ -220,7 +220,6 @@ def apply_multiple_ranges_to_dataframe(df, ranges):
     Returns DataFrame with selected columns from different ranges
     """
     parts = []
-    names = []
     excel_cols = []
 
     # Total number of columns/rows in the dataframe for bounds checking
@@ -253,20 +252,16 @@ def apply_multiple_ranges_to_dataframe(df, ranges):
                 continue
             seen_cols.add(dedupe_key)
 
-            # Extract column by absolute Excel index (map to df.columns)
-            col_name = df.columns[col_idx]
-
             # Extract the slice of rows and reset index so different ranges align by row position
             series = df.iloc[start_row:end_row + 1, col_idx].reset_index(drop=True)
 
             parts.append(series)
-            names.append(str(col_name))
             excel_cols.append(number_to_excel_column(col_idx))
 
     if parts:
         # Concatenate side-by-side. Different lengths are allowed; shorter series become NaN-padded.
         combined_df = pd.concat(parts, axis=1)
-        combined_df.columns = names
+        combined_df.columns = excel_cols
         return combined_df, excel_cols
     else:
         return pd.DataFrame(), []
